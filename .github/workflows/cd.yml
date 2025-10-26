@@ -281,17 +281,43 @@ jobs:
             echo "启动 Nacos..."
             $COMPOSE_CMD -f docker-compose.prod.yml up -d nacos
             
-            # 等待 Nacos 完全启动
+            # 等待 Nacos 完全启动（增加等待时间）
             echo "等待 Nacos 完全启动..."
-            sleep 60
+            sleep 120
+            
+            # 检查 Nacos 健康状态
+            echo "检查 Nacos 健康状态..."
+            for i in {1..10}; do
+              if docker inspect --format='{{.State.Health.Status}}' gamevault-nacos | grep -q "healthy"; then
+                echo "✅ Nacos 健康检查通过"
+                break
+              else
+                echo "⏳ Nacos 健康检查中... (第 $i 次)"
+                sleep 30
+                if [ $i -eq 10 ]; then
+                  echo "❌ Nacos 健康检查失败，查看日志："
+                  docker logs gamevault-nacos --tail 50
+                  exit 1
+                fi
+              fi
+            done
             
             # 检查基础设施服务状态
             echo "检查基础设施服务状态..."
             docker ps --filter "name=gamevault"
             
-            # 启动微服务
+            # 启动微服务（分步启动）
             echo "启动微服务..."
-            $COMPOSE_CMD -f docker-compose.prod.yml up -d gateway auth shopping forum developer social nginx
+            # 先启动网关
+            $COMPOSE_CMD -f docker-compose.prod.yml up -d gateway
+            sleep 30
+            
+            # 再启动其他微服务
+            $COMPOSE_CMD -f docker-compose.prod.yml up -d auth shopping forum developer social
+            sleep 30
+            
+            # 最后启动 Nginx
+            $COMPOSE_CMD -f docker-compose.prod.yml up -d nginx
             
             # 检查微服务启动结果
             if [ $? -ne 0 ]; then

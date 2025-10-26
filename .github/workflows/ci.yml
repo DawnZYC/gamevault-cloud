@@ -101,6 +101,7 @@ jobs:
     strategy:
       matrix:
         service: [gateway, auth, shopping, forum, developer, social]
+      max-parallel: 2  # 限制并发数量，避免 Docker Hub 速率限制
     
     steps:
       - name: Checkout code
@@ -146,6 +147,11 @@ jobs:
           username: ${{ secrets.DOCKERHUB_USERNAME }}
           password: ${{ secrets.DOCKERHUB_PASSWORD }}
 
+      - name: Wait to avoid rate limiting
+        run: |
+          # 等待一段时间，避免 Docker Hub 速率限制
+          sleep $((RANDOM % 30 + 10))
+
       - name: Extract metadata
         id: meta
         uses: docker/metadata-action@v5
@@ -175,8 +181,16 @@ jobs:
           push: true
           tags: ${{ steps.meta.outputs.tags }}
           labels: ${{ steps.meta.outputs.labels }}
-          cache-from: type=gha
-          cache-to: type=gha,mode=max
+          cache-from: |
+            type=gha
+            type=registry,ref=${{ secrets.DOCKERHUB_USERNAME }}/gamevault-cloud-${{ matrix.service }}:latest
+          cache-to: |
+            type=gha,mode=max
+            type=registry,ref=${{ secrets.DOCKERHUB_USERNAME }}/gamevault-cloud-${{ matrix.service }}:latest,mode=max
+          platforms: linux/amd64
+        continue-on-error: true
+        retry-on-failure: true
+        retry-max-attempts: 3
 
   # ==================== 集成测试 ====================
   integration-test:

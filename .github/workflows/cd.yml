@@ -282,11 +282,8 @@ jobs:
 
       - name: Copy deployment files
         run: |
-          # 动态替换 docker-compose.prod.yml 中的镜像名称
-          sed "s/dawn2333\/gamevault-cloud-/\${{ secrets.DOCKERHUB_USERNAME }}\/gamevault-cloud-/g" docker-compose.prod.yml > docker-compose.prod.temp.yml
-          
           # 复制部署文件到 EC2
-          scp docker-compose.prod.temp.yml ${{ secrets.EC2_USER }}@${{ secrets.EC2_HOST }}:/opt/gamevault/docker-compose.prod.yml
+          scp docker-compose.prod.yml ${{ secrets.EC2_USER }}@${{ secrets.EC2_HOST }}:/opt/gamevault/
           scp -r nginx/ ${{ secrets.EC2_USER }}@${{ secrets.EC2_HOST }}:/opt/gamevault/
           scp -r scripts/ ${{ secrets.EC2_USER }}@${{ secrets.EC2_HOST }}:/opt/gamevault/
           
@@ -329,49 +326,15 @@ jobs:
             
             echo "使用命令: $COMPOSE_CMD"
             
-            # 登录到 Docker Hub
-            echo "登录到 Docker Hub..."
+            # 在 EC2 上登录到 Docker Hub
+            echo "在 EC2 上登录到 Docker Hub..."
             echo "${{ secrets.DOCKERHUB_PASSWORD }}" | docker login -u ${{ secrets.DOCKERHUB_USERNAME }} --password-stdin
             
-            # 检查镜像是否存在（带调试信息）
-            echo "检查镜像是否存在..."
-            echo "仓库信息: ${{ github.repository }}"
-            echo "分支信息: ${{ github.ref }}"
-            
+            # 直接在 EC2 上拉取镜像
+            echo "在 EC2 上拉取最新镜像..."
             for service in gateway auth shopping forum developer social; do
-              echo "检查 $service 镜像..."
-              IMAGE_URL="${{ env.IMAGE_NAME }}/$service:latest"
-              echo "查找镜像: $IMAGE_URL"
-              
-              # 先尝试列出所有可用的标签
-              echo "尝试列出 $service 服务的所有标签..."
-              docker manifest inspect "$IMAGE_URL" 2>&1 || echo "latest 标签不存在"
-              
-              # 检查是否存在
-              if docker manifest inspect "$IMAGE_URL" > /dev/null 2>&1; then
-                echo "✅ 镜像 $IMAGE_URL 存在"
-              else
-                echo "❌ 镜像 $IMAGE_URL 不存在！"
-                echo "请确保 CI 工作流已成功完成并推送了镜像到 Docker Hub。"
-                exit 1
-              fi
-            done
-            
-            # 拉取最新镜像（带重试机制）
-            echo "拉取最新镜像..."
-            for i in {1..3}; do
-              echo "尝试拉取镜像 (第 $i 次)..."
-              if $COMPOSE_CMD -f docker-compose.prod.yml pull; then
-                echo "镜像拉取成功"
-                break
-              else
-                echo "镜像拉取失败，等待 30 秒后重试..."
-                sleep 30
-                if [ $i -eq 3 ]; then
-                  echo "镜像拉取失败，退出部署"
-                  exit 1
-                fi
-              fi
+              echo "拉取 $service 镜像..."
+              docker pull ${{ secrets.DOCKERHUB_USERNAME }}/gamevault-cloud-$service:latest
             done
             
             # 停止旧服务

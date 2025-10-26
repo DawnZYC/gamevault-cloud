@@ -157,7 +157,7 @@ jobs:
             type=ref,event=pr
             type=sha,prefix={{branch}}-
             type=raw,value=latest,enable={{is_default_branch}}
-            type=raw,value=latest,enable=${{equals(github.ref, 'refs/heads/prod/master_no_k8s')}}
+            type=raw,value=latest,enable=${{ github.ref == 'refs/heads/prod/master_no_k8s' }}
 
       - name: Build and push Docker image
         uses: docker/build-push-action@v5

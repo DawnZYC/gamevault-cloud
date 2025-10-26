@@ -119,6 +119,19 @@ jobs:
           key: ${{ runner.os }}-m2-${{ hashFiles('**/pom.xml') }}
           restore-keys: ${{ runner.os }}-m2
 
+      - name: Generate RSA certificates
+        run: |
+          # 为认证服务生成 RSA 证书
+          mkdir -p gamevault-auth/src/main/resources/certs
+          openssl genrsa -out gamevault-auth/src/main/resources/certs/rsa-private.pem 2048
+          openssl rsa -in gamevault-auth/src/main/resources/certs/rsa-private.pem -pubout -out gamevault-auth/src/main/resources/certs/rsa-public.pem
+          
+          # 为论坛服务生成公钥（复制认证服务的公钥）
+          mkdir -p gamevault-forum/src/main/resources/certs
+          cp gamevault-auth/src/main/resources/certs/rsa-public.pem gamevault-forum/src/main/resources/certs/public.pem
+          
+          echo "RSA certificates generated successfully"
+
       - name: Build Maven project
         run: |
           # 构建整个多模块项目

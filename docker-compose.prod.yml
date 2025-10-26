@@ -135,8 +135,8 @@ services:
     ports:
       - "8081:8081"
     volumes:
-      - auth_uploads:/app/uploads
-      - auth_logs:/app/logs
+      - /opt/gamevault/uploads/auth:/app/uploads
+      - /opt/gamevault/logs:/app/logs
     networks:
       - gamevault-network
     depends_on:
@@ -161,8 +161,8 @@ services:
     ports:
       - "8082:8082"
     volumes:
-      - shopping_uploads:/app/uploads
-      - shopping_logs:/app/logs
+      - /opt/gamevault/uploads/shopping:/app/uploads
+      - /opt/gamevault/logs:/app/logs
     networks:
       - gamevault-network
     depends_on:
@@ -187,8 +187,8 @@ services:
     ports:
       - "8083:8083"
     volumes:
-      - forum_uploads:/app/uploads
-      - forum_logs:/app/logs
+      - /opt/gamevault/uploads/forum:/app/uploads
+      - /opt/gamevault/logs:/app/logs
     networks:
       - gamevault-network
     depends_on:
@@ -213,8 +213,8 @@ services:
     ports:
       - "8084:8084"
     volumes:
-      - developer_uploads:/app/uploads
-      - developer_logs:/app/logs
+      - /opt/gamevault/uploads/developer:/app/uploads
+      - /opt/gamevault/logs:/app/logs
     networks:
       - gamevault-network
     depends_on:
@@ -239,8 +239,8 @@ services:
     ports:
       - "8089:8089"
     volumes:
-      - social_uploads:/app/uploads
-      - social_logs:/app/logs
+      - /opt/gamevault/uploads/social:/app/uploads
+      - /opt/gamevault/logs:/app/logs
     networks:
       - gamevault-network
     depends_on:
@@ -287,16 +287,6 @@ volumes:
   nacos_data:
   nacos_logs:
   minio_data:
-  auth_uploads:
-  auth_logs:
-  shopping_uploads:
-  shopping_logs:
-  forum_uploads:
-  forum_logs:
-  developer_uploads:
-  developer_logs:
-  social_uploads:
-  social_logs:
 
 networks:
   gamevault-network:

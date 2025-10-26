@@ -87,6 +87,19 @@ jobs:
           key: ${{ runner.os }}-m2-${{ hashFiles('**/pom.xml') }}
           restore-keys: ${{ runner.os }}-m2
 
+      - name: Generate RSA certificates
+        run: |
+          # 为认证服务生成 RSA 证书
+          mkdir -p gamevault-auth/src/main/resources/certs
+          openssl genrsa -out gamevault-auth/src/main/resources/certs/rsa-private.pem 2048
+          openssl rsa -in gamevault-auth/src/main/resources/certs/rsa-private.pem -pubout -out gamevault-auth/src/main/resources/certs/rsa-public.pem
+          
+          # 为论坛服务生成公钥（复制认证服务的公钥）
+          mkdir -p gamevault-forum/src/main/resources/certs
+          cp gamevault-auth/src/main/resources/certs/rsa-public.pem gamevault-forum/src/main/resources/certs/public.pem
+          
+          echo "RSA certificates generated successfully"
+
       - name: Build Maven project
         run: |
           # 构建整个多模块项目
@@ -152,14 +165,26 @@ jobs:
       - name: Setup EC2 environment
         run: |
           ssh ${{ secrets.EC2_USER }}@${{ secrets.EC2_HOST }} << 'EOF'
-            # 创建目录
+            # 创建主目录
             sudo mkdir -p /opt/gamevault
             sudo chown $USER:$USER /opt/gamevault
             
-            # 创建基本目录结构
-            mkdir -p /opt/gamevault/{logs,uploads,backups}
+            # 创建微服务需要的目录结构
+            mkdir -p /opt/gamevault/logs
+            mkdir -p /opt/gamevault/backups
+            mkdir -p /opt/gamevault/uploads
+            
+            # 创建各个微服务的上传目录
+            mkdir -p /opt/gamevault/uploads/{auth,shopping,forum,developer,social}
+            
+            # 设置权限
+            chmod -R 755 /opt/gamevault/uploads
+            chmod -R 755 /opt/gamevault/logs
+            chmod -R 755 /opt/gamevault/backups
             
             echo "EC2 环境设置完成"
+            echo "目录结构："
+            ls -la /opt/gamevault/
           EOF
 
       - name: Copy deployment files
@@ -180,20 +205,48 @@ jobs:
           ssh ${{ secrets.EC2_USER }}@${{ secrets.EC2_HOST }} << 'EOF'
             cd /opt/gamevault
             
+            echo "=== 开始部署 ==="
+            
             # 拉取最新镜像
+            echo "拉取最新镜像..."
             docker compose -f docker-compose.prod.yml pull
             
             # 停止旧服务
+            echo "停止旧服务..."
             docker compose -f docker-compose.prod.yml down
             
-            # 启动新服务
+            # 清理未使用的镜像
+            echo "清理未使用的镜像..."
+            docker image prune -f
+            
+            # 启动基础设施服务（Nacos, PostgreSQL, Redis, MinIO）
+            echo "启动基础设施服务..."
+            docker compose -f docker-compose.prod.yml up -d postgres redis nacos minio
+            
+            # 等待基础设施服务启动
+            echo "等待基础设施服务启动..."
+            sleep 90
+            
+            # 检查基础设施服务状态
+            echo "检查基础设施服务状态..."
+            docker ps --filter "name=gamevault"
+            
+            # 启动微服务
+            echo "启动微服务..."
             docker compose -f docker-compose.prod.yml up -d
             
-            # 等待服务启动
-            sleep 60
+            # 等待微服务启动
+            echo "等待微服务启动..."
+            sleep 120
             
-            # 检查服务状态
-            docker ps
+            # 检查所有服务状态
+            echo "检查所有服务状态..."
+            docker ps --filter "name=gamevault"
+            
+            # 检查服务日志
+            echo "检查 Gateway 服务日志..."
+            docker logs gamevault-gateway --tail 50 || echo "Gateway 日志获取失败"
+            
             echo "部署完成"
           EOF
 

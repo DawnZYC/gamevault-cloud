@@ -186,121 +186,79 @@ jobs:
             echo "✅ 环境初始化完成"
           ENDSSH
 
-      - name: 部署应用到 EC2
+      - name: 步骤 1 - 清理和准备
         env:
-          REGISTRY: ${{ env.REGISTRY }}
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           GITHUB_ACTOR: ${{ github.actor }}
         run: |
-          ssh -i ~/.ssh/ec2_key ${{ secrets.EC2_USER }}@${{ secrets.EC2_HOST }} << EOF
+          ssh -o ServerAliveInterval=30 -i ~/.ssh/ec2_key ${{ secrets.EC2_USER }}@${{ secrets.EC2_HOST }} << EOF
             set -e
-            
             echo "=========================================="
-            echo "开始部署 GameVault 微服务"
+            echo "步骤 1: 清理和准备"
             echo "=========================================="
             
-            # 移动部署文件
-            echo "移动部署文件..."
             sudo rm -rf /opt/gamevault/nginx
             cp -r /tmp/gamevault-deploy/* /opt/gamevault/
-            
             cd /opt/gamevault
             
-            # 登录镜像仓库
-            echo "登录到 GitHub Container Registry..."
             echo "$GITHUB_TOKEN" | docker login ghcr.io -u "$GITHUB_ACTOR" --password-stdin
             
-            # ========================================
-            # 第一步：彻底清理所有容器和资源
-            # ========================================
-            echo "=========================================="
-            echo "开始清理所有旧容器和资源..."
-            echo "=========================================="
-            
-            # 1. 停止所有 gamevault 相关的容器
-            echo "步骤 1: 停止所有容器..."
-            docker ps -a --filter "name=gamevault-" --format "{{.Names}}" | xargs -r docker stop 2>/dev/null || true
-            
-            # 2. 删除所有 gamevault 相关的容器
-            echo "步骤 2: 删除所有容器..."
-            docker ps -a --filter "name=gamevault-" --format "{{.Names}}" | xargs -r docker rm -f 2>/dev/null || true
-            
-            # 3. 停止 docker-compose 管理的容器
-            echo "步骤 3: 停止 docker-compose 管理的容器..."
+            # 彻底清理
+            docker ps -a --filter "name=gamevault-" -q | xargs -r docker stop 2>/dev/null || true
+            docker ps -a --filter "name=gamevault-" -q | xargs -r docker rm -f 2>/dev/null || true
             docker compose -f docker-compose.prod.yml down --remove-orphans --volumes 2>/dev/null || true
-            
-            # 4. 再次确认删除所有 gamevault 容器（双重保险）
-            echo "步骤 4: 再次确认删除所有 gamevault 容器..."
-            docker rm -f gamevault-postgres gamevault-redis gamevault-minio gamevault-nacos \
-                        gamevault-gateway gamevault-auth gamevault-shopping gamevault-forum \
-                        gamevault-developer gamevault-social gamevault-nginx 2>/dev/null || true
-            
-            # 5. 清理未使用的容器
-            echo "步骤 5: 清理未使用的容器..."
             docker container prune -f
-            
-            # 6. 清理 gamevault 相关网络
-            echo "步骤 6: 清理网络..."
-            docker network ls --filter "name=gamevault" --format "{{.Name}}" | xargs -r docker network rm 2>/dev/null || true
             docker network prune -f
             
-            # 7. 等待资源完全释放
-            echo "步骤 7: 等待资源释放..."
-            sleep 5
-            
-            echo "✅ 清理完成！"
-            
-            # ========================================
-            # 第二步：拉取最新镜像
-            # ========================================
-            echo "=========================================="
-            echo "拉取最新 Docker 镜像..."
-            echo "=========================================="
+            # 拉取镜像
             docker compose -f docker-compose.prod.yml pull
-            
-            # 分阶段启动服务
+            echo "✅ 步骤 1 完成"
+          EOF
+
+      - name: 步骤 2 - 启动基础设施
+        run: |
+          ssh -o ServerAliveInterval=30 -i ~/.ssh/ec2_key ${{ secrets.EC2_USER }}@${{ secrets.EC2_HOST }} << 'EOF'
+            set -e
+            cd /opt/gamevault
             echo "=========================================="
-            echo "启动基础设施服务..."
+            echo "步骤 2: 启动基础设施"
             echo "=========================================="
             docker compose -f docker-compose.prod.yml up -d postgres redis minio
-            
-            echo "等待基础设施服务就绪（30秒）..."
             sleep 30
-            
+            echo "✅ 步骤 2 完成"
+          EOF
+
+      - name: 步骤 3 - 启动 Nacos（后台运行）
+        run: |
+          ssh -o ServerAliveInterval=30 -i ~/.ssh/ec2_key ${{ secrets.EC2_USER }}@${{ secrets.EC2_HOST }} << 'EOF'
+            set -e
+            cd /opt/gamevault
             echo "=========================================="
-            echo "启动 Nacos..."
+            echo "步骤 3: 启动 Nacos"
             echo "=========================================="
             docker compose -f docker-compose.prod.yml up -d nacos
-            
-            echo "等待 Nacos 初始化 PostgreSQL 数据库（120秒）..."
-            sleep 120
-            
-            echo "检查 Nacos 状态..."
-            docker logs gamevault-nacos --tail=50 || true
-            
+            echo "✅ Nacos 已启动，后台初始化中..."
+          EOF
+      
+      - name: 步骤 4 - 等待 Nacos 就绪
+        run: |
+          echo "等待 Nacos 初始化（120秒）..."
+          for i in {1..12}; do
+            echo "等待进度: $((i*10))/120 秒"
+            sleep 10
+          done
+
+      - name: 步骤 5 - 启动微服务
+        run: |
+          ssh -o ServerAliveInterval=30 -i ~/.ssh/ec2_key ${{ secrets.EC2_USER }}@${{ secrets.EC2_HOST }} << 'EOF'
+            set -e
+            cd /opt/gamevault
             echo "=========================================="
-            echo "启动微服务..."
+            echo "步骤 5: 启动微服务"
             echo "=========================================="
-            docker compose -f docker-compose.prod.yml up -d gateway auth shopping forum developer social
-            
-            echo "等待微服务启动（45秒）..."
-            sleep 45
-            
-            echo "=========================================="
-            echo "启动 Nginx..."
-            echo "=========================================="
-            docker compose -f docker-compose.prod.yml up -d nginx
-            
-            echo "等待 Nginx 启动（15秒）..."
-            sleep 15
-            
-            # 显示服务状态
-            echo "=========================================="
-            echo "服务状态："
-            echo "=========================================="
+            docker compose -f docker-compose.prod.yml up -d gateway auth shopping forum developer social nginx
+            sleep 30
             docker compose -f docker-compose.prod.yml ps
-            
-            echo ""
             echo "✅ 部署完成！"
           EOF
 

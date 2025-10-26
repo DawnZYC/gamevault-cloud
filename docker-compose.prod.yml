@@ -1,0 +1,303 @@
+version: '3.8'
+
+services:
+  # ==================== 基础设施服务 ====================
+  
+  # PostgreSQL 数据库
+  postgres:
+    image: postgres:15-alpine
+    container_name: gamevault-postgres
+    restart: unless-stopped
+    environment:
+      POSTGRES_DB: gamevault
+      POSTGRES_USER: gamevault_user
+      POSTGRES_PASSWORD: gamevault_pass
+      POSTGRES_MULTIPLE_DATABASES: gamevault_auth,gamevault_social,gamevault_shopping,gamevault_forum,gamevault_developer
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+      - ./scripts/init-databases.sh:/docker-entrypoint-initdb.d/init-databases.sh
+    ports:
+      - "5432:5432"
+    networks:
+      - gamevault-network
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U gamevault_user -d gamevault"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+
+  # Redis 缓存
+  redis:
+    image: redis:7-alpine
+    container_name: gamevault-redis
+    restart: unless-stopped
+    command: redis-server --appendonly yes --requirepass redis_pass
+    volumes:
+      - redis_data:/data
+    ports:
+      - "6379:6379"
+    networks:
+      - gamevault-network
+    healthcheck:
+      test: ["CMD", "redis-cli", "--raw", "incr", "ping"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+
+  # Nacos 服务注册发现
+  nacos:
+    image: nacos/nacos-server:v2.3.0
+    container_name: gamevault-nacos
+    restart: unless-stopped
+    environment:
+      MODE: standalone
+      SPRING_DATASOURCE_PLATFORM: postgresql
+      MYSQL_SERVICE_HOST: postgres
+      MYSQL_SERVICE_PORT: 5432
+      MYSQL_SERVICE_DB_NAME: gamevault
+      MYSQL_SERVICE_USER: gamevault_user
+      MYSQL_SERVICE_PASSWORD: gamevault_pass
+      MYSQL_SERVICE_DB_PARAM: characterEncoding=utf8&connectTimeout=1000&socketTimeout=3000&autoReconnect=true&useSSL=false&allowPublicKeyRetrieval=true&serverTimezone=UTC
+      NACOS_AUTH_ENABLE: true
+      NACOS_AUTH_TOKEN: SecretKey012345678901234567890123456789012345678901234567890123456789
+      NACOS_AUTH_IDENTITY_KEY: nacos
+      NACOS_AUTH_IDENTITY_VALUE: nacos
+    volumes:
+      - nacos_data:/home/nacos/data
+      - nacos_logs:/home/nacos/logs
+    ports:
+      - "8848:8848"
+      - "9848:9848"
+    networks:
+      - gamevault-network
+    depends_on:
+      postgres:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8848/nacos/v1/console/health/readiness"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+
+  # MinIO 对象存储
+  minio:
+    image: minio/minio:latest
+    container_name: gamevault-minio
+    restart: unless-stopped
+    command: server /data --console-address ":9001"
+    environment:
+      MINIO_ROOT_USER: minioadmin
+      MINIO_ROOT_PASSWORD: minioadmin123
+    volumes:
+      - minio_data:/data
+    ports:
+      - "9000:9000"
+      - "9001:9001"
+    networks:
+      - gamevault-network
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:9000/minio/health/live"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+
+  # ==================== 微服务 ====================
+
+  # API 网关
+  gateway:
+    image: gamevault/gateway:latest
+    container_name: gamevault-gateway
+    restart: unless-stopped
+    environment:
+      SPRING_PROFILES_ACTIVE: prod
+      POD_IP: gateway
+    ports:
+      - "8080:8080"
+    networks:
+      - gamevault-network
+    depends_on:
+      nacos:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8080/actuator/health"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+
+  # 认证服务
+  auth:
+    image: gamevault/auth:latest
+    container_name: gamevault-auth
+    restart: unless-stopped
+    environment:
+      SPRING_PROFILES_ACTIVE: prod
+      POD_IP: auth
+    ports:
+      - "8081:8081"
+    volumes:
+      - auth_uploads:/app/uploads
+      - auth_logs:/app/logs
+    networks:
+      - gamevault-network
+    depends_on:
+      postgres:
+        condition: service_healthy
+      nacos:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8081/actuator/health"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+
+  # 购物服务
+  shopping:
+    image: gamevault/shopping:latest
+    container_name: gamevault-shopping
+    restart: unless-stopped
+    environment:
+      SPRING_PROFILES_ACTIVE: prod
+      POD_IP: shopping
+    ports:
+      - "8082:8082"
+    volumes:
+      - shopping_uploads:/app/uploads
+      - shopping_logs:/app/logs
+    networks:
+      - gamevault-network
+    depends_on:
+      postgres:
+        condition: service_healthy
+      nacos:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8082/actuator/health"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+
+  # 论坛服务
+  forum:
+    image: gamevault/forum:latest
+    container_name: gamevault-forum
+    restart: unless-stopped
+    environment:
+      SPRING_PROFILES_ACTIVE: prod
+      POD_IP: forum
+    ports:
+      - "8083:8083"
+    volumes:
+      - forum_uploads:/app/uploads
+      - forum_logs:/app/logs
+    networks:
+      - gamevault-network
+    depends_on:
+      postgres:
+        condition: service_healthy
+      nacos:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8083/actuator/health"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+
+  # 开发者服务
+  developer:
+    image: gamevault/developer:latest
+    container_name: gamevault-developer
+    restart: unless-stopped
+    environment:
+      SPRING_PROFILES_ACTIVE: prod
+      POD_IP: developer
+    ports:
+      - "8084:8084"
+    volumes:
+      - developer_uploads:/app/uploads
+      - developer_logs:/app/logs
+    networks:
+      - gamevault-network
+    depends_on:
+      postgres:
+        condition: service_healthy
+      nacos:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8084/actuator/health"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+
+  # 社交服务
+  social:
+    image: gamevault/social:latest
+    container_name: gamevault-social
+    restart: unless-stopped
+    environment:
+      SPRING_PROFILES_ACTIVE: prod
+      POD_IP: social
+    ports:
+      - "8089:8089"
+    volumes:
+      - social_uploads:/app/uploads
+      - social_logs:/app/logs
+    networks:
+      - gamevault-network
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+      nacos:
+        condition: service_healthy
+      minio:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8089/actuator/health"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+
+  # ==================== 监控服务 ====================
+
+  # Nginx 反向代理
+  nginx:
+    image: nginx:alpine
+    container_name: gamevault-nginx
+    restart: unless-stopped
+    ports:
+      - "80:80"
+      - "443:443"
+    volumes:
+      - ./nginx/nginx.conf:/etc/nginx/nginx.conf
+      - ./nginx/ssl:/etc/nginx/ssl
+    networks:
+      - gamevault-network
+    depends_on:
+      - gateway
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost/health"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+
+volumes:
+  postgres_data:
+  redis_data:
+  nacos_data:
+  nacos_logs:
+  minio_data:
+  auth_uploads:
+  auth_logs:
+  shopping_uploads:
+  shopping_logs:
+  forum_uploads:
+  forum_logs:
+  developer_uploads:
+  developer_logs:
+  social_uploads:
+  social_logs:
+
+networks:
+  gamevault-network:
+    driver: bridge

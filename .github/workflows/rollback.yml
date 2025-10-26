@@ -1,0 +1,205 @@
+name: Rollback Deployment
+
+on:
+  workflow_dispatch:
+    inputs:
+      environment:
+        description: '回滚环境'
+        required: true
+        type: choice
+        options:
+          - staging
+          - production
+      service:
+        description: '要回滚的服务（留空回滚所有服务）'
+        required: false
+        type: choice
+        options:
+          - all
+          - gateway
+          - auth
+          - shopping
+          - forum
+          - developer
+          - social
+      target_version:
+        description: '回滚到的版本（留空回滚到上一个版本）'
+        required: false
+        type: string
+      confirm_rollback:
+        description: '确认回滚（输入 "CONFIRM" 确认）'
+        required: true
+        type: string
+
+env:
+  REGISTRY: ghcr.io
+  IMAGE_NAME: ${{ github.repository }}
+
+jobs:
+  # ==================== 回滚部署 ====================
+  rollback-deployment:
+    runs-on: ubuntu-latest
+    environment: ${{ github.event.inputs.environment }}
+    
+    steps:
+      - name: Validate rollback confirmation
+        run: |
+          if [ "${{ github.event.inputs.confirm_rollback }}" != "CONFIRM" ]; then
+            echo "❌ 回滚确认失败，请输入 'CONFIRM' 确认回滚操作"
+            exit 1
+          fi
+          echo "✅ 回滚确认通过"
+
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Set rollback parameters
+        run: |
+          echo "回滚环境: ${{ github.event.inputs.environment }}"
+          echo "回滚服务: ${{ github.event.inputs.service }}"
+          echo "目标版本: ${{ github.event.inputs.target_version }}"
+
+      - name: Configure SSH
+        run: |
+          mkdir -p ~/.ssh
+          
+          if [ "${{ github.event.inputs.environment }}" == "production" ]; then
+            echo "${{ secrets.PRODUCTION_SSH_KEY }}" > ~/.ssh/id_rsa
+            chmod 600 ~/.ssh/id_rsa
+            ssh-keyscan -H ${{ secrets.PRODUCTION_HOST }} >> ~/.ssh/known_hosts
+            echo "HOST=${{ secrets.PRODUCTION_HOST }}" >> $GITHUB_ENV
+            echo "USER=${{ secrets.PRODUCTION_USER }}" >> $GITHUB_ENV
+          else
+            echo "${{ secrets.STAGING_SSH_KEY }}" > ~/.ssh/id_rsa
+            chmod 600 ~/.ssh/id_rsa
+            ssh-keyscan -H ${{ secrets.STAGING_HOST }} >> ~/.ssh/known_hosts
+            echo "HOST=${{ secrets.STAGING_HOST }}" >> $GITHUB_ENV
+            echo "USER=${{ secrets.STAGING_USER }}" >> $GITHUB_ENV
+          fi
+
+      - name: Check current deployment status
+        run: |
+          ssh ${{ env.USER }}@${{ env.HOST }} << 'EOF'
+            cd /opt/gamevault${{ github.event.inputs.environment == 'production' && '' || '-staging' }}
+            
+            echo "=== 当前部署状态 ==="
+            docker ps --format "table {{.Names}}\t{{.Image}}\t{{.Status}}"
+            
+            echo ""
+            echo "=== 服务健康状态 ==="
+            /opt/gamevault${{ github.event.inputs.environment == 'production' && '' || '-staging' }}/monitor.sh
+          EOF
+
+      - name: Create rollback backup
+        run: |
+          ssh ${{ env.USER }}@${{ env.HOST }} << 'EOF'
+            cd /opt/gamevault${{ github.event.inputs.environment == 'production' && '' || '-staging' }}
+            
+            # 创建回滚前的备份
+            echo "创建回滚前备份..."
+            /opt/gamevault${{ github.event.inputs.environment == 'production' && '' || '-staging' }}/backup.sh
+            
+            # 备份当前配置
+            cp docker-compose.prod.yml docker-compose.prod.yml.backup.$(date +%Y%m%d_%H%M%S)
+          EOF
+
+      - name: Execute rollback
+        run: |
+          ssh ${{ env.USER }}@${{ env.HOST }} << 'EOF'
+            cd /opt/gamevault${{ github.event.inputs.environment == 'production' && '' || '-staging' }}
+            
+            # 确定回滚版本
+            if [ -n "${{ github.event.inputs.target_version }}" ]; then
+              ROLLBACK_TAG="${{ github.event.inputs.target_version }}"
+            else
+              # 获取上一个版本
+              ROLLBACK_TAG="previous"
+            fi
+            
+            echo "回滚到版本: $ROLLBACK_TAG"
+            
+            # 回滚特定服务或所有服务
+            if [ "${{ github.event.inputs.service }}" == "all" ]; then
+              echo "回滚所有服务..."
+              
+              # 停止所有服务
+              docker compose -f docker-compose.prod.yml down
+              
+              # 更新镜像标签
+              if [ "$ROLLBACK_TAG" != "previous" ]; then
+                sed -i "s/:latest/:$ROLLBACK_TAG/g" docker-compose.prod.yml
+              fi
+              
+              # 启动服务
+              docker compose -f docker-compose.prod.yml up -d
+            else
+              echo "回滚服务: ${{ github.event.inputs.service }}"
+              
+              # 停止特定服务
+              docker compose -f docker-compose.prod.yml stop ${{ github.event.inputs.service }}
+              
+              # 更新特定服务的镜像标签
+              if [ "$ROLLBACK_TAG" != "previous" ]; then
+                sed -i "s/gamevault\/${{ github.event.inputs.service }}:latest/gamevault\/${{ github.event.inputs.service }}:$ROLLBACK_TAG/g" docker-compose.prod.yml
+              fi
+              
+              # 启动特定服务
+              docker compose -f docker-compose.prod.yml up -d ${{ github.event.inputs.service }}
+            fi
+            
+            # 等待服务启动
+            sleep 30
+          EOF
+
+      - name: Verify rollback
+        run: |
+          sleep 60
+          
+          # 健康检查
+          if [ "${{ github.event.inputs.service }}" == "all" ] || [ "${{ github.event.inputs.service }}" == "gateway" ]; then
+            if curl -f http://${{ env.HOST }}/health; then
+              echo "✅ Gateway 回滚后健康检查通过"
+            else
+              echo "❌ Gateway 回滚后健康检查失败"
+              exit 1
+            fi
+          fi
+          
+          if [ "${{ github.event.inputs.service }}" == "all" ] || [ "${{ github.event.inputs.service }}" == "auth" ]; then
+            if curl -f http://${{ env.HOST }}:8081/actuator/health; then
+              echo "✅ Auth 回滚后健康检查通过"
+            else
+              echo "❌ Auth 回滚后健康检查失败"
+              exit 1
+            fi
+          fi
+          
+          # 其他服务的健康检查...
+
+      - name: Post-rollback verification
+        run: |
+          ssh ${{ env.USER }}@${{ env.HOST }} << 'EOF'
+            cd /opt/gamevault${{ github.event.inputs.environment == 'production' && '' || '-staging' }}
+            
+            echo "=== 回滚后服务状态 ==="
+            docker ps --format "table {{.Names}}\t{{.Image}}\t{{.Status}}"
+            
+            echo ""
+            echo "=== 服务健康状态 ==="
+            /opt/gamevault${{ github.event.inputs.environment == 'production' && '' || '-staging' }}/monitor.sh
+          EOF
+
+      - name: Rollback summary
+        run: |
+          echo "## 回滚完成" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "| 项目 | 值 |" >> $GITHUB_STEP_SUMMARY
+          echo "|------|-----|" >> $GITHUB_STEP_SUMMARY
+          echo "| 环境 | ${{ github.event.inputs.environment }} |" >> $GITHUB_STEP_SUMMARY
+          echo "| 服务 | ${{ github.event.inputs.service }} |" >> $GITHUB_STEP_SUMMARY
+          echo "| 目标版本 | ${{ github.event.inputs.target_version || 'previous' }} |" >> $GITHUB_STEP_SUMMARY
+          echo "| 回滚时间 | $(date) |" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "### 访问地址" >> $GITHUB_STEP_SUMMARY
+          echo "- 网关: http://${{ env.HOST }}" >> $GITHUB_STEP_SUMMARY
+          echo "- 健康检查: http://${{ env.HOST }}/health" >> $GITHUB_STEP_SUMMARY

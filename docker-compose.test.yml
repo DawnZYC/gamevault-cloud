@@ -1,0 +1,271 @@
+version: '3.8'
+
+services:
+  # ==================== 测试环境基础设施 ====================
+  
+  # PostgreSQL 测试数据库
+  postgres-test:
+    image: postgres:15-alpine
+    container_name: gamevault-postgres-test
+    environment:
+      POSTGRES_DB: gamevault_test
+      POSTGRES_USER: test_user
+      POSTGRES_PASSWORD: test_pass
+      POSTGRES_MULTIPLE_DATABASES: gamevault_auth_test,gamevault_social_test,gamevault_shopping_test,gamevault_forum_test,gamevault_developer_test
+    volumes:
+      - ./scripts/init-databases.sh:/docker-entrypoint-initdb.d/init-databases.sh
+    ports:
+      - "5433:5432"
+    networks:
+      - gamevault-test-network
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U test_user -d gamevault_test"]
+      interval: 10s
+      timeout: 5s
+      retries: 3
+
+  # Redis 测试缓存
+  redis-test:
+    image: redis:7-alpine
+    container_name: gamevault-redis-test
+    command: redis-server --appendonly yes --requirepass test_redis_pass
+    ports:
+      - "6380:6379"
+    networks:
+      - gamevault-test-network
+    healthcheck:
+      test: ["CMD", "redis-cli", "--raw", "incr", "ping"]
+      interval: 10s
+      timeout: 5s
+      retries: 3
+
+  # Nacos 测试注册中心
+  nacos-test:
+    image: nacos/nacos-server:v2.3.0
+    container_name: gamevault-nacos-test
+    environment:
+      MODE: standalone
+      NACOS_AUTH_ENABLE: false
+    ports:
+      - "8849:8848"
+    networks:
+      - gamevault-test-network
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8848/nacos/v1/console/health/readiness"]
+      interval: 10s
+      timeout: 5s
+      retries: 3
+
+  # MinIO 测试对象存储
+  minio-test:
+    image: minio/minio:latest
+    container_name: gamevault-minio-test
+    command: server /data --console-address ":9001"
+    environment:
+      MINIO_ROOT_USER: testadmin
+      MINIO_ROOT_PASSWORD: testadmin123
+    ports:
+      - "9002:9000"
+      - "9003:9001"
+    networks:
+      - gamevault-test-network
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:9000/minio/health/live"]
+      interval: 10s
+      timeout: 5s
+      retries: 3
+
+  # ==================== 测试微服务 ====================
+
+  # API 网关测试
+  gateway-test:
+    image: gamevault/gateway:test
+    container_name: gamevault-gateway-test
+    environment:
+      SPRING_PROFILES_ACTIVE: test
+      POD_IP: gateway-test
+    ports:
+      - "8090:8080"
+    networks:
+      - gamevault-test-network
+    depends_on:
+      nacos-test:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8080/actuator/health"]
+      interval: 10s
+      timeout: 5s
+      retries: 3
+
+  # 认证服务测试
+  auth-test:
+    image: gamevault/auth:test
+    container_name: gamevault-auth-test
+    environment:
+      SPRING_PROFILES_ACTIVE: test
+      POD_IP: auth-test
+    ports:
+      - "8091:8081"
+    networks:
+      - gamevault-test-network
+    depends_on:
+      postgres-test:
+        condition: service_healthy
+      nacos-test:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8081/actuator/health"]
+      interval: 10s
+      timeout: 5s
+      retries: 3
+
+  # 购物服务测试
+  shopping-test:
+    image: gamevault/shopping:test
+    container_name: gamevault-shopping-test
+    environment:
+      SPRING_PROFILES_ACTIVE: test
+      POD_IP: shopping-test
+    ports:
+      - "8092:8082"
+    networks:
+      - gamevault-test-network
+    depends_on:
+      postgres-test:
+        condition: service_healthy
+      nacos-test:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8082/actuator/health"]
+      interval: 10s
+      timeout: 5s
+      retries: 3
+
+  # 论坛服务测试
+  forum-test:
+    image: gamevault/forum:test
+    container_name: gamevault-forum-test
+    environment:
+      SPRING_PROFILES_ACTIVE: test
+      POD_IP: forum-test
+    ports:
+      - "8093:8083"
+    networks:
+      - gamevault-test-network
+    depends_on:
+      postgres-test:
+        condition: service_healthy
+      nacos-test:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8083/actuator/health"]
+      interval: 10s
+      timeout: 5s
+      retries: 3
+
+  # 开发者服务测试
+  developer-test:
+    image: gamevault/developer:test
+    container_name: gamevault-developer-test
+    environment:
+      SPRING_PROFILES_ACTIVE: test
+      POD_IP: developer-test
+    ports:
+      - "8094:8084"
+    networks:
+      - gamevault-test-network
+    depends_on:
+      postgres-test:
+        condition: service_healthy
+      nacos-test:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8084/actuator/health"]
+      interval: 10s
+      timeout: 5s
+      retries: 3
+
+  # 社交服务测试
+  social-test:
+    image: gamevault/social:test
+    container_name: gamevault-social-test
+    environment:
+      SPRING_PROFILES_ACTIVE: test
+      POD_IP: social-test
+    ports:
+      - "8099:8089"
+    networks:
+      - gamevault-test-network
+    depends_on:
+      postgres-test:
+        condition: service_healthy
+      redis-test:
+        condition: service_healthy
+      nacos-test:
+        condition: service_healthy
+      minio-test:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8089/actuator/health"]
+      interval: 10s
+      timeout: 5s
+      retries: 3
+
+  # ==================== 测试工具 ====================
+
+  # 测试运行器
+  test-runner:
+    image: curlimages/curl:latest
+    container_name: gamevault-test-runner
+    networks:
+      - gamevault-test-network
+    depends_on:
+      gateway-test:
+        condition: service_healthy
+      auth-test:
+        condition: service_healthy
+      shopping-test:
+        condition: service_healthy
+      forum-test:
+        condition: service_healthy
+      developer-test:
+        condition: service_healthy
+      social-test:
+        condition: service_healthy
+    command: |
+      sh -c '
+        echo "等待所有服务启动..."
+        sleep 30
+        
+        echo "运行集成测试..."
+        
+        # 测试网关
+        curl -f http://gateway-test:8080/actuator/health || exit 1
+        echo "✅ Gateway 健康检查通过"
+        
+        # 测试认证服务
+        curl -f http://auth-test:8081/actuator/health || exit 1
+        echo "✅ Auth 健康检查通过"
+        
+        # 测试购物服务
+        curl -f http://shopping-test:8082/actuator/health || exit 1
+        echo "✅ Shopping 健康检查通过"
+        
+        # 测试论坛服务
+        curl -f http://forum-test:8083/actuator/health || exit 1
+        echo "✅ Forum 健康检查通过"
+        
+        # 测试开发者服务
+        curl -f http://developer-test:8084/actuator/health || exit 1
+        echo "✅ Developer 健康检查通过"
+        
+        # 测试社交服务
+        curl -f http://social-test:8089/actuator/health || exit 1
+        echo "✅ Social 健康检查通过"
+        
+        echo "🎉 所有服务集成测试通过！"
+      '
+
+networks:
+  gamevault-test-network:
+    driver: bridge

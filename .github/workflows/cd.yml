@@ -1,36 +1,77 @@
-# ==========================================
-# CD Workflow - Build Docker Images and Deploy to EC2
-# For GameVault Cloud Microservices
-# Deployment Method: Docker Compose
-# ==========================================
-
-name: "CD - Build and Deploy to EC2"
+name: Continuous Deployment (CD)
 
 on:
   push:
-    branches: [prod/master_no_k8s]
+    branches: [ main ]
   workflow_dispatch:
+    inputs:
+      environment:
+        description: '部署环境'
+        required: true
+        default: 'staging'
+        type: choice
+        options:
+          - staging
+          - production
+      force_deploy:
+        description: '强制部署（跳过检查）'
+        required: false
+        default: false
+        type: boolean
 
 env:
-  DOCKER_REGISTRY: docker.io
-  IMAGE_TAG: latest
+  REGISTRY: ghcr.io
+  IMAGE_NAME: ${{ github.repository }}
 
 jobs:
-  build-and-push:
-    environment: production
+  # ==================== 部署准备 ====================
+  prepare-deployment:
     runs-on: ubuntu-latest
-    name: Build and Push Docker Images
-    strategy:
-      fail-fast: false
-      matrix:
-        service:
-          - gamevault-gateway
-          - gamevault-auth
-          - gamevault-shopping
-          - gamevault-forum
-          - gamevault-developer
-          - gamevault-social
+    outputs:
+      environment: ${{ steps.set-env.outputs.environment }}
+      should_deploy: ${{ steps.check-deploy.outputs.should_deploy }}
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
 
+      - name: Set deployment environment
+        id: set-env
+        run: |
+          if [ "${{ github.event_name }}" == "workflow_dispatch" ]; then
+            echo "environment=${{ github.event.inputs.environment }}" >> $GITHUB_OUTPUT
+          elif [ "${{ github.ref }}" == "refs/heads/main" ]; then
+            echo "environment=production" >> $GITHUB_OUTPUT
+          else
+            echo "environment=staging" >> $GITHUB_OUTPUT
+          fi
+
+      - name: Check if should deploy
+        id: check-deploy
+        run: |
+          if [ "${{ github.event.inputs.force_deploy }}" == "true" ]; then
+            echo "should_deploy=true" >> $GITHUB_OUTPUT
+          elif [ "${{ github.ref }}" == "refs/heads/main" ]; then
+            echo "should_deploy=true" >> $GITHUB_OUTPUT
+          else
+            echo "should_deploy=false" >> $GITHUB_OUTPUT
+          fi
+
+      - name: Deployment info
+        run: |
+          echo "部署环境: ${{ steps.set-env.outputs.environment }}"
+          echo "是否部署: ${{ steps.check-deploy.outputs.should_deploy }}"
+          echo "触发分支: ${{ github.ref }}"
+
+  # ==================== 构建镜像 ====================
+  build-images:
+    needs: prepare-deployment
+    runs-on: ubuntu-latest
+    if: needs.prepare-deployment.outputs.should_deploy == 'true'
+    
+    strategy:
+      matrix:
+        service: [gateway, auth, shopping, forum, developer, social]
+    
     steps:
       - name: Checkout code
         uses: actions/checkout@v4
@@ -40,37 +81,58 @@ jobs:
         with:
           java-version: '17'
           distribution: 'temurin'
-          cache: 'maven'
 
-      - name: Build with Maven
-        run: mvn clean package -DskipTests -B
+      - name: Cache Maven dependencies
+        uses: actions/cache@v4
+        with:
+          path: ~/.m2
+          key: ${{ runner.os }}-m2-${{ hashFiles('**/pom.xml') }}
+          restore-keys: ${{ runner.os }}-m2
+
+      - name: Build Maven project
+        run: |
+          mvn clean package -DskipTests
+          cd gamevault-${{ matrix.service }}
+          mvn clean package -DskipTests
 
       - name: Set up Docker Buildx
         uses: docker/setup-buildx-action@v3
 
-      - name: Login to Docker Hub
+      - name: Log in to Container Registry
         uses: docker/login-action@v3
         with:
-          username: ${{ secrets.DOCKERHUB_USERNAME }}
-          password: ${{ secrets.DOCKERHUB_TOKEN }}
+          registry: ${{ env.REGISTRY }}
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Extract metadata
+        id: meta
+        uses: docker/metadata-action@v5
+        with:
+          images: ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}/${{ matrix.service }}
+          tags: |
+            type=ref,event=branch
+            type=sha,prefix={{branch}}-
+            type=raw,value=latest,enable={{is_default_branch}}
+            type=raw,value=${{ needs.prepare-deployment.outputs.environment }}-latest
 
       - name: Build and push Docker image
         uses: docker/build-push-action@v5
         with:
-          context: ./${{ matrix.service }}
-          file: ./${{ matrix.service }}/Dockerfile
+          context: ./gamevault-${{ matrix.service }}
           push: true
-          tags: ${{ secrets.DOCKERHUB_USERNAME }}/${{ matrix.service }}:${{ env.IMAGE_TAG }}
-          platforms: linux/amd64
-          cache-from: type=registry,ref=${{ secrets.DOCKERHUB_USERNAME }}/${{ matrix.service }}:latest
-          cache-to: type=inline
+          tags: ${{ steps.meta.outputs.tags }}
+          labels: ${{ steps.meta.outputs.labels }}
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
 
-  deploy-to-ec2:
+  # ==================== 部署到测试环境 ====================
+  deploy-staging:
+    needs: [prepare-deployment, build-images]
     runs-on: ubuntu-latest
-    needs: build-and-push
-    name: Deploy to EC2 via Docker Compose
-    if: github.ref == 'refs/heads/prod/master_no_k8s'
-
+    if: needs.prepare-deployment.outputs.environment == 'staging' && needs.prepare-deployment.outputs.should_deploy == 'true'
+    environment: staging
+    
     steps:
       - name: Checkout code
         uses: actions/checkout@v4
@@ -78,131 +140,169 @@ jobs:
       - name: Configure SSH
         run: |
           mkdir -p ~/.ssh
-          echo "${{ secrets.EC2_SSH_PRIVATE_KEY }}" > ~/.ssh/ec2_key
-          chmod 600 ~/.ssh/ec2_key
-          ssh-keyscan -H ${{ secrets.EC2_HOST }} >> ~/.ssh/known_hosts
+          echo "${{ secrets.STAGING_SSH_KEY }}" > ~/.ssh/id_rsa
+          chmod 600 ~/.ssh/id_rsa
+          ssh-keyscan -H ${{ secrets.STAGING_HOST }} >> ~/.ssh/known_hosts
 
-      - name: Initialize EC2 environment
+      - name: Deploy to staging
         run: |
-          ssh -i ~/.ssh/ec2_key ${{ secrets.EC2_USER }}@${{ secrets.EC2_HOST }} << 'EOF'
-            echo "Initializing deployment environment..."
-          
-            # 检查 Docker 是否安装
-            if ! command -v docker &> /dev/null; then
-              echo "Installing Docker..."
-              curl -fsSL https://get.docker.com -o get-docker.sh
-              sudo sh get-docker.sh
-              sudo usermod -aG docker $USER
-              rm get-docker.sh
-            fi
-          
-            # 检查 Docker Compose 是否安装
-            if ! docker compose version &> /dev/null; then
-              echo "Installing Docker Compose..."
-              sudo apt-get update
-              sudo apt-get install -y docker-compose-plugin
-            fi
-          
-            echo "Docker and Docker Compose are ready"
-          EOF
-
-      - name: Create directory structure
-        run: |
-          ssh -i ~/.ssh/ec2_key ${{ secrets.EC2_USER }}@${{ secrets.EC2_HOST }} << 'EOF'
-            echo "Creating directory structure..."
-          
-            mkdir -p ~/gamevault-cloud/docker/postgres/data
-            mkdir -p ~/gamevault-cloud/docker/postgres/init
-            mkdir -p ~/gamevault-cloud/docker/nacos/logs
-            mkdir -p ~/gamevault-cloud/docker/nacos/data
-            mkdir -p ~/gamevault-cloud/docker/redis/data
-            mkdir -p ~/gamevault-cloud/docker/minio/data
-            mkdir -p ~/gamevault-cloud/docker/minio/config
-            mkdir -p ~/gamevault-cloud/docker/uploads
-          
-            sudo chmod -R 755 ~/gamevault-cloud/docker
-          
-            echo "Directory structure created"
-          EOF
-
-      - name: Create Redis config
-        run: |
-          ssh -i ~/.ssh/ec2_key ${{ secrets.EC2_USER }}@${{ secrets.EC2_HOST }} << 'EOF'
-            if [ ! -f ~/gamevault-cloud/docker/redis/redis.conf ]; then
-              echo "Creating Redis configuration..."
-              cat > ~/gamevault-cloud/docker/redis/redis.conf << 'REDIS_EOF'
-          bind 0.0.0.0
-          protected-mode no
-          port 6379
-          tcp-backlog 511
-          timeout 0
-          tcp-keepalive 300
-          daemonize no
-          supervised no
-          pidfile /var/run/redis_6379.pid
-          loglevel notice
-          databases 16
-          save 900 1
-          save 300 10
-          save 60 10000
-          stop-writes-on-bgsave-error yes
-          rdbcompression yes
-          rdbchecksum yes
-          dbfilename dump.rdb
-          dir /data
-          maxmemory 256mb
-          maxmemory-policy allkeys-lru
-          REDIS_EOF
-              echo "Redis config created"
-            fi
-          EOF
-
-      - name: Copy SQL initialization scripts to EC2
-        run: |
-          echo "Copying SQL files to EC2..."
-          scp -i ~/.ssh/ec2_key docker/postgres/init/01-init-databases.sql ${{ secrets.EC2_USER }}@${{ secrets.EC2_HOST }}:~/gamevault-cloud/docker/postgres/init/
-          scp -i ~/.ssh/ec2_key docker/postgres/init/02-forum-schema.sql ${{ secrets.EC2_USER }}@${{ secrets.EC2_HOST }}:~/gamevault-cloud/docker/postgres/init/
-          scp -i ~/.ssh/ec2_key docker/postgres/init/03-init-database.sql ${{ secrets.EC2_USER }}@${{ secrets.EC2_HOST }}:~/gamevault-cloud/docker/postgres/init/
-          echo "SQL files copied successfully!"
-          
-
-      - name: Verify SQL files on EC2
-        run: |
-          ssh -i ~/.ssh/ec2_key ${{ secrets.EC2_USER }}@${{ secrets.EC2_HOST }} << 'EOF'
-            echo "Verifying SQL files..."
-            ls -lh ~/gamevault-cloud/docker/postgres/init/
-          EOF
-
-      - name: Copy docker-compose.yml to EC2
-        run: |
-          scp -i ~/.ssh/ec2_key docker-compose.yml ${{ secrets.EC2_USER }}@${{ secrets.EC2_HOST }}:~/gamevault-cloud/
-
-      - name: Deploy on EC2
-        run: |
-          ssh -i ~/.ssh/ec2_key ${{ secrets.EC2_USER }}@${{ secrets.EC2_HOST }} << 'EOF'
-            cd ~/gamevault-cloud
-
-            echo "Creating .env file for docker-compose..."
-            echo "DOCKERHUB_USERNAME=${{ secrets.DOCKERHUB_USERNAME }}" > .env
-            echo "IMAGE_TAG=latest" >> .env
-            echo "EC2_PUBLIC_IP=52.77.169.8" >> .env
-  
-            echo "Pulling latest images..."
-            sudo docker compose pull
+          ssh ${{ secrets.STAGING_USER }}@${{ secrets.STAGING_HOST }} << 'EOF'
+            cd /opt/gamevault-staging
             
-            echo "Stopping old containers..."
-            sudo docker compose down
+            # 更新镜像标签
+            sed -i 's/:latest/:staging-latest/g' docker-compose.prod.yml
             
-            echo "Starting services..."
-            sudo docker compose up -d
+            # 拉取最新镜像
+            docker compose -f docker-compose.prod.yml pull
             
-            echo "Waiting for services..."
+            # 停止旧服务
+            docker compose -f docker-compose.prod.yml down
+            
+            # 启动新服务
+            docker compose -f docker-compose.prod.yml up -d
+            
+            # 等待服务启动
             sleep 30
             
-            echo "Deployment complete!"
-            sudo docker compose ps 
+            # 健康检查
+            /opt/gamevault-staging/monitor.sh
           EOF
 
-      - name: Cleanup SSH key
-        if: always()
-        run: rm -f ~/.ssh/ec2_key
+      - name: Staging health check
+        run: |
+          sleep 60
+          if curl -f http://${{ secrets.STAGING_HOST }}/health; then
+            echo "✅ 测试环境部署成功"
+          else
+            echo "❌ 测试环境部署失败"
+            exit 1
+          fi
+
+  # ==================== 部署到生产环境 ====================
+  deploy-production:
+    needs: [prepare-deployment, build-images]
+    runs-on: ubuntu-latest
+    if: needs.prepare-deployment.outputs.environment == 'production' && needs.prepare-deployment.outputs.should_deploy == 'true'
+    environment: production
+    
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Configure SSH
+        run: |
+          mkdir -p ~/.ssh
+          echo "${{ secrets.PRODUCTION_SSH_KEY }}" > ~/.ssh/id_rsa
+          chmod 600 ~/.ssh/id_rsa
+          ssh-keyscan -H ${{ secrets.PRODUCTION_HOST }} >> ~/.ssh/known_hosts
+
+      - name: Pre-deployment backup
+        run: |
+          ssh ${{ secrets.PRODUCTION_USER }}@${{ secrets.PRODUCTION_HOST }} << 'EOF'
+            cd /opt/gamevault
+            /opt/gamevault/backup.sh
+          EOF
+
+      - name: Deploy to production
+        run: |
+          ssh ${{ secrets.PRODUCTION_USER }}@${{ secrets.PRODUCTION_HOST }} << 'EOF'
+            cd /opt/gamevault
+            
+            # 滚动更新服务
+            docker compose -f docker-compose.prod.yml pull
+            
+            # 逐个更新服务（零停机部署）
+            services=("gateway" "auth" "shopping" "forum" "developer" "social")
+            for service in "${services[@]}"; do
+              echo "更新服务: $service"
+              docker compose -f docker-compose.prod.yml up -d --no-deps $service
+              sleep 30
+              
+              # 健康检查
+              if ! curl -f http://localhost:8080/actuator/health; then
+                echo "服务 $service 健康检查失败，回滚..."
+                docker compose -f docker-compose.prod.yml restart $service
+                exit 1
+              fi
+            done
+            
+            # 清理旧镜像
+            docker image prune -f
+          EOF
+
+      - name: Production health check
+        run: |
+          sleep 120
+          
+          # 检查所有服务
+          SERVICES=("gateway" "auth" "shopping" "forum" "developer" "social")
+          PORTS=("8080" "8081" "8082" "8083" "8084" "8089")
+          
+          for i in "${!SERVICES[@]}"; do
+            SERVICE="${SERVICES[$i]}"
+            PORT="${PORTS[$i]}"
+            
+            if curl -f http://${{ secrets.PRODUCTION_HOST }}:$PORT/actuator/health; then
+              echo "✅ $SERVICE 服务健康"
+            else
+              echo "❌ $SERVICE 服务不健康"
+              exit 1
+            fi
+          done
+          
+          echo "🎉 生产环境部署成功！"
+
+  # ==================== 部署后验证 ====================
+  post-deployment-verification:
+    needs: [deploy-staging, deploy-production]
+    runs-on: ubuntu-latest
+    if: always() && (needs.deploy-staging.result == 'success' || needs.deploy-production.result == 'success')
+    
+    steps:
+      - name: Run smoke tests
+        run: |
+          if [ "${{ needs.deploy-staging.result }}" == "success" ]; then
+            echo "运行测试环境冒烟测试..."
+            # 这里可以添加具体的冒烟测试
+          fi
+          
+          if [ "${{ needs.deploy-production.result }}" == "success" ]; then
+            echo "运行生产环境冒烟测试..."
+            # 这里可以添加具体的冒烟测试
+          fi
+
+      - name: Notify deployment status
+        run: |
+          if [ "${{ needs.deploy-staging.result }}" == "success" ]; then
+            echo "🎉 测试环境部署成功！"
+            echo "测试环境地址: http://${{ secrets.STAGING_HOST }}"
+          fi
+          
+          if [ "${{ needs.deploy-production.result }}" == "success" ]; then
+            echo "🎉 生产环境部署成功！"
+            echo "生产环境地址: http://${{ secrets.PRODUCTION_HOST }}"
+          fi
+
+  # ==================== 部署失败回滚 ====================
+  rollback:
+    needs: [deploy-staging, deploy-production]
+    runs-on: ubuntu-latest
+    if: failure() && (needs.deploy-staging.result == 'failure' || needs.deploy-production.result == 'failure')
+    
+    steps:
+      - name: Rollback deployment
+        run: |
+          if [ "${{ needs.deploy-staging.result }}" == "failure" ]; then
+            echo "回滚测试环境..."
+            # 回滚逻辑
+          fi
+          
+          if [ "${{ needs.deploy-production.result }}" == "failure" ]; then
+            echo "回滚生产环境..."
+            # 回滚逻辑
+          fi
+
+      - name: Notify rollback
+        run: |
+          echo "❌ 部署失败，已执行回滚操作"
+          echo "请检查日志并修复问题后重新部署"

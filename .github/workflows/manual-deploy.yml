@@ -1,0 +1,158 @@
+name: Manual Deployment
+
+on:
+  workflow_dispatch:
+    inputs:
+      environment:
+        description: '部署环境'
+        required: true
+        type: choice
+        options:
+          - staging
+          - production
+      service:
+        description: '要部署的服务（留空部署所有服务）'
+        required: false
+        type: choice
+        options:
+          - all
+          - gateway
+          - auth
+          - shopping
+          - forum
+          - developer
+          - social
+      image_tag:
+        description: '镜像标签（留空使用latest）'
+        required: false
+        type: string
+        default: 'latest'
+      force_deploy:
+        description: '强制部署（跳过健康检查）'
+        required: false
+        type: boolean
+        default: false
+
+env:
+  REGISTRY: ghcr.io
+  IMAGE_NAME: ${{ github.repository }}
+
+jobs:
+  # ==================== 手动部署 ====================
+  manual-deployment:
+    runs-on: ubuntu-latest
+    environment: ${{ github.event.inputs.environment }}
+    
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Set deployment parameters
+        run: |
+          echo "部署环境: ${{ github.event.inputs.environment }}"
+          echo "部署服务: ${{ github.event.inputs.service }}"
+          echo "镜像标签: ${{ github.event.inputs.image_tag }}"
+          echo "强制部署: ${{ github.event.inputs.force_deploy }}"
+
+      - name: Configure SSH
+        run: |
+          mkdir -p ~/.ssh
+          
+          if [ "${{ github.event.inputs.environment }}" == "production" ]; then
+            echo "${{ secrets.PRODUCTION_SSH_KEY }}" > ~/.ssh/id_rsa
+            chmod 600 ~/.ssh/id_rsa
+            ssh-keyscan -H ${{ secrets.PRODUCTION_HOST }} >> ~/.ssh/known_hosts
+            echo "HOST=${{ secrets.PRODUCTION_HOST }}" >> $GITHUB_ENV
+            echo "USER=${{ secrets.PRODUCTION_USER }}" >> $GITHUB_ENV
+          else
+            echo "${{ secrets.STAGING_SSH_KEY }}" > ~/.ssh/id_rsa
+            chmod 600 ~/.ssh/id_rsa
+            ssh-keyscan -H ${{ secrets.STAGING_HOST }} >> ~/.ssh/known_hosts
+            echo "HOST=${{ secrets.STAGING_HOST }}" >> $GITHUB_ENV
+            echo "USER=${{ secrets.STAGING_USER }}" >> $GITHUB_ENV
+          fi
+
+      - name: Pre-deployment backup
+        run: |
+          ssh ${{ env.USER }}@${{ env.HOST }} << 'EOF'
+            cd /opt/gamevault${{ github.event.inputs.environment == 'production' && '' || '-staging' }}
+            /opt/gamevault${{ github.event.inputs.environment == 'production' && '' || '-staging' }}/backup.sh
+          EOF
+
+      - name: Deploy services
+        run: |
+          ssh ${{ env.USER }}@${{ env.HOST }} << 'EOF'
+            cd /opt/gamevault${{ github.event.inputs.environment == 'production' && '' || '-staging' }}
+            
+            # 设置镜像标签
+            if [ "${{ github.event.inputs.image_tag }}" != "latest" ]; then
+              sed -i "s/:latest/:${{ github.event.inputs.image_tag }}/g" docker-compose.prod.yml
+            fi
+            
+            # 部署特定服务或所有服务
+            if [ "${{ github.event.inputs.service }}" == "all" ]; then
+              echo "部署所有服务..."
+              docker compose -f docker-compose.prod.yml pull
+              docker compose -f docker-compose.prod.yml up -d
+            else
+              echo "部署服务: ${{ github.event.inputs.service }}"
+              docker compose -f docker-compose.prod.yml pull ${{ github.event.inputs.service }}
+              docker compose -f docker-compose.prod.yml up -d ${{ github.event.inputs.service }}
+            fi
+            
+            # 等待服务启动
+            sleep 30
+          EOF
+
+      - name: Health check
+        if: github.event.inputs.force_deploy != 'true'
+        run: |
+          sleep 60
+          
+          # 根据部署的服务进行健康检查
+          if [ "${{ github.event.inputs.service }}" == "all" ] || [ "${{ github.event.inputs.service }}" == "gateway" ]; then
+            if curl -f http://${{ env.HOST }}/health; then
+              echo "✅ Gateway 健康检查通过"
+            else
+              echo "❌ Gateway 健康检查失败"
+              exit 1
+            fi
+          fi
+          
+          if [ "${{ github.event.inputs.service }}" == "all" ] || [ "${{ github.event.inputs.service }}" == "auth" ]; then
+            if curl -f http://${{ env.HOST }}:8081/actuator/health; then
+              echo "✅ Auth 健康检查通过"
+            else
+              echo "❌ Auth 健康检查失败"
+              exit 1
+            fi
+          fi
+          
+          # 其他服务的健康检查...
+
+      - name: Post-deployment verification
+        run: |
+          ssh ${{ env.USER }}@${{ env.HOST }} << 'EOF'
+            cd /opt/gamevault${{ github.event.inputs.environment == 'production' && '' || '-staging' }}
+            
+            # 运行监控脚本
+            /opt/gamevault${{ github.event.inputs.environment == 'production' && '' || '-staging' }}/monitor.sh
+            
+            # 显示服务状态
+            docker ps --format "table {{.Names}}\t{{.Status}}\t{{.Ports}}"
+          EOF
+
+      - name: Deployment summary
+        run: |
+          echo "## 部署完成" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "| 项目 | 值 |" >> $GITHUB_STEP_SUMMARY
+          echo "|------|-----|" >> $GITHUB_STEP_SUMMARY
+          echo "| 环境 | ${{ github.event.inputs.environment }} |" >> $GITHUB_STEP_SUMMARY
+          echo "| 服务 | ${{ github.event.inputs.service }} |" >> $GITHUB_STEP_SUMMARY
+          echo "| 镜像标签 | ${{ github.event.inputs.image_tag }} |" >> $GITHUB_STEP_SUMMARY
+          echo "| 部署时间 | $(date) |" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "### 访问地址" >> $GITHUB_STEP_SUMMARY
+          echo "- 网关: http://${{ env.HOST }}" >> $GITHUB_STEP_SUMMARY
+          echo "- 健康检查: http://${{ env.HOST }}/health" >> $GITHUB_STEP_SUMMARY

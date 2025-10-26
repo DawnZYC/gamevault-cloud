@@ -105,7 +105,7 @@ services:
 
   # API 网关
   gateway:
-    image: gamevault/gateway:latest
+    image: ghcr.io/zyc/gamevault-cloud/gateway:latest
     container_name: gamevault-gateway
     restart: unless-stopped
     environment:
@@ -126,7 +126,7 @@ services:
 
   # 认证服务
   auth:
-    image: gamevault/auth:latest
+    image: ghcr.io/zyc/gamevault-cloud/auth:latest
     container_name: gamevault-auth
     restart: unless-stopped
     environment:
@@ -152,7 +152,7 @@ services:
 
   # 购物服务
   shopping:
-    image: gamevault/shopping:latest
+    image: ghcr.io/zyc/gamevault-cloud/shopping:latest
     container_name: gamevault-shopping
     restart: unless-stopped
     environment:
@@ -178,7 +178,7 @@ services:
 
   # 论坛服务
   forum:
-    image: gamevault/forum:latest
+    image: ghcr.io/zyc/gamevault-cloud/forum:latest
     container_name: gamevault-forum
     restart: unless-stopped
     environment:
@@ -204,7 +204,7 @@ services:
 
   # 开发者服务
   developer:
-    image: gamevault/developer:latest
+    image: ghcr.io/zyc/gamevault-cloud/developer:latest
     container_name: gamevault-developer
     restart: unless-stopped
     environment:
@@ -230,7 +230,7 @@ services:
 
   # 社交服务
   social:
-    image: gamevault/social:latest
+    image: ghcr.io/zyc/gamevault-cloud/social:latest
     container_name: gamevault-social
     restart: unless-stopped
     environment:

@@ -25,7 +25,7 @@ on:
 
 env:
   REGISTRY: ghcr.io
-  IMAGE_NAME: ${{ github.repository }}
+  IMAGE_NAME: ${{ github.repository_owner }}/gamevault-cloud
 
 jobs:
   # ==================== 部署准备 ====================
@@ -337,12 +337,12 @@ jobs:
             
             for service in gateway auth shopping forum developer social; do
               echo "检查 $service 镜像..."
-              IMAGE_URL="ghcr.io/${{ github.repository }}/$service:latest"
+              IMAGE_URL="ghcr.io/${{ env.IMAGE_NAME }}/$service:latest"
               echo "查找镜像: $IMAGE_URL"
               
               # 先尝试列出所有可用的标签
               echo "尝试列出 $service 服务的所有标签..."
-              docker manifest inspect ghcr.io/${{ github.repository }}/$service:latest 2>&1 || echo "latest 标签不存在"
+              docker manifest inspect "$IMAGE_URL" 2>&1 || echo "latest 标签不存在"
               
               # 检查是否存在
               if docker manifest inspect "$IMAGE_URL" > /dev/null 2>&1; then

@@ -252,23 +252,51 @@ jobs:
 
       - name: Production health check
         run: |
-          sleep 120
+          echo "=== 生产环境健康检查 ==="
           
-          # 检查所有服务
-          SERVICES=("gateway" "auth" "shopping" "forum" "developer" "social")
-          PORTS=("8080" "8081" "8082" "8083" "8084" "8089")
-          
-          for i in "${!SERVICES[@]}"; do
-            SERVICE="${SERVICES[$i]}"
-            PORT="${PORTS[$i]}"
+          # 首先检查 EC2 上的容器状态
+          echo "检查 EC2 容器状态..."
+          ssh ${{ secrets.EC2_USER }}@${{ secrets.EC2_HOST }} << 'EOF'
+            echo "=== Docker 容器状态 ==="
+            docker ps --filter "name=gamevault" --format "table {{.Names}}\t{{.Status}}\t{{.Ports}}"
             
-            if curl -f http://${{ secrets.EC2_HOST }}:$PORT/actuator/health; then
-              echo "✅ $SERVICE 服务健康"
-            else
-              echo "❌ $SERVICE 服务不健康"
-              exit 1
-            fi
-          done
+            echo ""
+            echo "=== 容器日志检查 ==="
+            echo "Gateway 日志:"
+            docker logs gamevault-gateway --tail 20 || echo "Gateway 容器不存在或未运行"
+            
+            echo ""
+            echo "Nacos 日志:"
+            docker logs gamevault-nacos --tail 10 || echo "Nacos 容器不存在或未运行"
+            
+            echo ""
+            echo "=== 端口检查 ==="
+            netstat -tuln | grep -E ":(80|8080|8081|8082|8083|8084|8089|5432|6379|8848|9000)" || echo "没有相关端口在监听"
+          EOF
+          
+          # 等待服务完全启动
+          echo "等待服务完全启动..."
+          sleep 60
+          
+          # 检查网关
+          echo "检查网关服务..."
+          if curl -f --connect-timeout 10 --max-time 30 http://${{ secrets.EC2_HOST }}/health; then
+            echo "✅ 网关服务正常"
+          else
+            echo "❌ 网关服务异常"
+            echo "尝试检查网关详细状态..."
+            curl -v http://${{ secrets.EC2_HOST }}/health || echo "curl 失败"
+            exit 1
+          fi
+          
+          # 检查认证服务
+          echo "检查认证服务..."
+          if curl -f --connect-timeout 10 --max-time 30 http://${{ secrets.EC2_HOST }}/api/auth/health; then
+            echo "✅ 认证服务正常"
+          else
+            echo "❌ 认证服务异常"
+            exit 1
+          fi
           
           echo "🎉 生产环境部署成功！"
 

@@ -39,10 +39,8 @@ jobs:
         run: |
           if [ "${{ github.event_name }}" == "workflow_dispatch" ]; then
             echo "environment=${{ github.event.inputs.environment }}" >> $GITHUB_OUTPUT
-          elif [ "${{ github.ref }}" == "refs/heads/main" ]; then
-            echo "environment=production" >> $GITHUB_OUTPUT
           else
-            echo "environment=staging" >> $GITHUB_OUTPUT
+            echo "environment=production" >> $GITHUB_OUTPUT
           fi
 
       - name: Check if should deploy
@@ -50,7 +48,7 @@ jobs:
         run: |
           if [ "${{ github.event.inputs.force_deploy }}" == "true" ]; then
             echo "should_deploy=true" >> $GITHUB_OUTPUT
-          elif [ "${{ github.ref }}" == "refs/heads/main" ] || [ "${{ github.ref }}" == "refs/heads/prod/master_no_k8s" ]; then
+          elif [ "${{ github.ref }}" == "refs/heads/prod/master_no_k8s" ]; then
             echo "should_deploy=true" >> $GITHUB_OUTPUT
           else
             echo "should_deploy=false" >> $GITHUB_OUTPUT
@@ -126,63 +124,13 @@ jobs:
           cache-to: type=gha,mode=max
 
   # ==================== 部署到测试环境 ====================
-  deploy-staging:
-    needs: [prepare-deployment, build-images]
-    runs-on: ubuntu-latest
-    if: needs.prepare-deployment.outputs.environment == 'staging' && needs.prepare-deployment.outputs.should_deploy == 'true'
-    environment: staging
-    
-    steps:
-      - name: Checkout code
-        uses: actions/checkout@v4
-
-      - name: Configure SSH
-        run: |
-          mkdir -p ~/.ssh
-          echo "${{ secrets.STAGING_SSH_KEY }}" > ~/.ssh/id_rsa
-          chmod 600 ~/.ssh/id_rsa
-          ssh-keyscan -H ${{ secrets.STAGING_HOST }} >> ~/.ssh/known_hosts
-
-      - name: Deploy to staging
-        run: |
-          ssh ${{ secrets.STAGING_USER }}@${{ secrets.STAGING_HOST }} << 'EOF'
-            cd /opt/gamevault-staging
-            
-            # 更新镜像标签
-            sed -i 's/:latest/:staging-latest/g' docker-compose.prod.yml
-            
-            # 拉取最新镜像
-            docker compose -f docker-compose.prod.yml pull
-            
-            # 停止旧服务
-            docker compose -f docker-compose.prod.yml down
-            
-            # 启动新服务
-            docker compose -f docker-compose.prod.yml up -d
-            
-            # 等待服务启动
-            sleep 30
-            
-            # 健康检查
-            /opt/gamevault-staging/monitor.sh
-          EOF
-
-      - name: Staging health check
-        run: |
-          sleep 60
-          if curl -f http://${{ secrets.STAGING_HOST }}/health; then
-            echo "✅ 测试环境部署成功"
-          else
-            echo "❌ 测试环境部署失败"
-            exit 1
-          fi
+  # 暂时禁用 staging 环境，直接部署到 production
 
   # ==================== 部署到生产环境 ====================
   deploy-production:
     needs: [prepare-deployment, build-images]
     runs-on: ubuntu-latest
-    if: needs.prepare-deployment.outputs.environment == 'production' && needs.prepare-deployment.outputs.should_deploy == 'true'
-    environment: production
+    if: needs.prepare-deployment.outputs.should_deploy == 'true'
     
     steps:
       - name: Checkout code
@@ -191,20 +139,20 @@ jobs:
       - name: Configure SSH
         run: |
           mkdir -p ~/.ssh
-          echo "${{ secrets.PRODUCTION_SSH_KEY }}" > ~/.ssh/id_rsa
+          echo "${{ secrets.EC2_SSH_KEY }}" > ~/.ssh/id_rsa
           chmod 600 ~/.ssh/id_rsa
-          ssh-keyscan -H ${{ secrets.PRODUCTION_HOST }} >> ~/.ssh/known_hosts
+          ssh-keyscan -H ${{ secrets.EC2_HOST }} >> ~/.ssh/known_hosts
 
       - name: Pre-deployment backup
         run: |
-          ssh ${{ secrets.PRODUCTION_USER }}@${{ secrets.PRODUCTION_HOST }} << 'EOF'
+          ssh ${{ secrets.EC2_USER }}@${{ secrets.EC2_HOST }} << 'EOF'
             cd /opt/gamevault
             /opt/gamevault/backup.sh
           EOF
 
       - name: Deploy to production
         run: |
-          ssh ${{ secrets.PRODUCTION_USER }}@${{ secrets.PRODUCTION_HOST }} << 'EOF'
+          ssh ${{ secrets.EC2_USER }}@${{ secrets.EC2_HOST }} << 'EOF'
             cd /opt/gamevault
             
             # 滚动更新服务
@@ -241,7 +189,7 @@ jobs:
             SERVICE="${SERVICES[$i]}"
             PORT="${PORTS[$i]}"
             
-            if curl -f http://${{ secrets.PRODUCTION_HOST }}:$PORT/actuator/health; then
+            if curl -f http://${{ secrets.EC2_HOST }}:$PORT/actuator/health; then
               echo "✅ $SERVICE 服务健康"
             else
               echo "❌ $SERVICE 服务不健康"
@@ -253,53 +201,32 @@ jobs:
 
   # ==================== 部署后验证 ====================
   post-deployment-verification:
-    needs: [deploy-staging, deploy-production]
+    needs: [deploy-production]
     runs-on: ubuntu-latest
-    if: always() && (needs.deploy-staging.result == 'success' || needs.deploy-production.result == 'success')
+    if: always() && needs.deploy-production.result == 'success'
     
     steps:
       - name: Run smoke tests
         run: |
-          if [ "${{ needs.deploy-staging.result }}" == "success" ]; then
-            echo "运行测试环境冒烟测试..."
-            # 这里可以添加具体的冒烟测试
-          fi
-          
-          if [ "${{ needs.deploy-production.result }}" == "success" ]; then
-            echo "运行生产环境冒烟测试..."
-            # 这里可以添加具体的冒烟测试
-          fi
+          echo "运行生产环境冒烟测试..."
+          # 这里可以添加具体的冒烟测试
 
       - name: Notify deployment status
         run: |
-          if [ "${{ needs.deploy-staging.result }}" == "success" ]; then
-            echo "🎉 测试环境部署成功！"
-            echo "测试环境地址: http://${{ secrets.STAGING_HOST }}"
-          fi
-          
-          if [ "${{ needs.deploy-production.result }}" == "success" ]; then
-            echo "🎉 生产环境部署成功！"
-            echo "生产环境地址: http://${{ secrets.PRODUCTION_HOST }}"
-          fi
+          echo "🎉 生产环境部署成功！"
+          echo "生产环境地址: http://${{ secrets.EC2_HOST }}"
 
   # ==================== 部署失败回滚 ====================
   rollback:
-    needs: [deploy-staging, deploy-production]
+    needs: [deploy-production]
     runs-on: ubuntu-latest
-    if: failure() && (needs.deploy-staging.result == 'failure' || needs.deploy-production.result == 'failure')
+    if: failure() && needs.deploy-production.result == 'failure'
     
     steps:
       - name: Rollback deployment
         run: |
-          if [ "${{ needs.deploy-staging.result }}" == "failure" ]; then
-            echo "回滚测试环境..."
-            # 回滚逻辑
-          fi
-          
-          if [ "${{ needs.deploy-production.result }}" == "failure" ]; then
-            echo "回滚生产环境..."
-            # 回滚逻辑
-          fi
+          echo "回滚生产环境..."
+          # 回滚逻辑
 
       - name: Notify rollback
         run: |

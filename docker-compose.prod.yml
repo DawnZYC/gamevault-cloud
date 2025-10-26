@@ -71,7 +71,14 @@ services:
     networks:
       - gamevault-network
     depends_on:
-      - postgres
+      postgres:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8848/nacos/v1/ns/instance/list?serviceName=test"]
+      interval: 30s
+      timeout: 10s
+      retries: 10
+      start_period: 60s
 
   # MinIO 对象存储
   minio:
@@ -133,8 +140,10 @@ services:
     networks:
       - gamevault-network
     depends_on:
-      - postgres
-      - nacos
+      postgres:
+        condition: service_healthy
+      nacos:
+        condition: service_healthy
     healthcheck:
       test: ["CMD", "curl", "-f", "http://localhost:8081/actuator/health"]
       interval: 30s
@@ -157,8 +166,10 @@ services:
     networks:
       - gamevault-network
     depends_on:
-      - postgres
-      - nacos
+      postgres:
+        condition: service_healthy
+      nacos:
+        condition: service_healthy
     healthcheck:
       test: ["CMD", "curl", "-f", "http://localhost:8082/actuator/health"]
       interval: 30s
@@ -181,8 +192,10 @@ services:
     networks:
       - gamevault-network
     depends_on:
-      - postgres
-      - nacos
+      postgres:
+        condition: service_healthy
+      nacos:
+        condition: service_healthy
     healthcheck:
       test: ["CMD", "curl", "-f", "http://localhost:8083/actuator/health"]
       interval: 30s
@@ -205,8 +218,10 @@ services:
     networks:
       - gamevault-network
     depends_on:
-      - postgres
-      - nacos
+      postgres:
+        condition: service_healthy
+      nacos:
+        condition: service_healthy
     healthcheck:
       test: ["CMD", "curl", "-f", "http://localhost:8084/actuator/health"]
       interval: 30s

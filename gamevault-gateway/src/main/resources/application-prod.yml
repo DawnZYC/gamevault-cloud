@@ -19,6 +19,12 @@ spring:
         register-enabled: true
         heart-beat-interval: 5000
         heart-beat-timeout: 15000
+        # 增加重试和超时配置
+        retry-times: 10
+        retry-interval: 10000
+        timeout: 30000
+        # 延迟注册，等待 Nacos 就绪
+        register-delay: 30000
       config:
         enabled: false
 

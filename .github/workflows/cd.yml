@@ -168,11 +168,29 @@ jobs:
             echo "Stopping old containers..."
             sudo docker compose -f docker-compose.prod.yml down
             
-            echo "Starting services..."
-            sudo docker compose -f docker-compose.prod.yml up -d
+            echo "Starting infrastructure services..."
+            sudo docker compose -f docker-compose.prod.yml up -d postgres redis minio
             
-            echo "Waiting for services..."
+            echo "Waiting for infrastructure services..."
+            sleep 30
+            
+            echo "Starting Nacos..."
+            sudo docker compose -f docker-compose.prod.yml up -d nacos
+            
+            echo "Waiting for Nacos to be ready..."
+            sleep 90
+            
+            echo "Starting microservices..."
+            sudo docker compose -f docker-compose.prod.yml up -d gateway auth shopping forum developer social
+            
+            echo "Waiting for microservices..."
             sleep 60
+            
+            echo "Starting Nginx..."
+            sudo docker compose -f docker-compose.prod.yml up -d nginx
+            
+            echo "Waiting for all services..."
+            sleep 30
             
             echo "Deployment complete!"
             sudo docker compose -f docker-compose.prod.yml ps 

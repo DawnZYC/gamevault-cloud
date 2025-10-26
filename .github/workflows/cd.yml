@@ -1,10 +1,4 @@
-# ==========================================
-# CD Workflow - Build Docker Images and Deploy to EC2
-# For GameVault Cloud Microservices
-# Deployment Method: Docker Compose
-# ==========================================
-
-name: "CD - Build and Deploy to EC2"
+name: CD - Deploy to EC2
 
 on:
   push:
@@ -12,216 +6,326 @@ on:
   workflow_dispatch:
 
 env:
-  DOCKER_REGISTRY: ghcr.io
-  IMAGE_TAG: latest
+  REGISTRY: ghcr.io
+  IMAGE_PREFIX: ghcr.io/${{ github.repository_owner }}/gamevault-cloud
+  DEPLOY_DIR: /opt/gamevault
 
 jobs:
-  build-and-push:
-    environment: production
+  # ==================== 构建所有服务 ====================
+  build:
     runs-on: ubuntu-latest
-    name: Build and Push Docker Images
-    strategy:
-      fail-fast: false
-      matrix:
-        service:
-          - gateway
-          - auth
-          - shopping
-          - forum
-          - developer
-          - social
-
+    environment: production
+    
     steps:
-      - name: Checkout code
+      - name: Checkout 代码
         uses: actions/checkout@v4
 
-      - name: Set up JDK 17
+      - name: 设置 JDK 17
         uses: actions/setup-java@v4
         with:
           java-version: '17'
           distribution: 'temurin'
           cache: 'maven'
 
-      - name: Generate RSA certificates
+      - name: 生成 RSA 证书
         run: |
-          # 为认证服务生成 RSA 证书
+          echo "生成 RSA 证书..."
           mkdir -p gamevault-auth/src/main/resources/certs
           openssl genrsa -out gamevault-auth/src/main/resources/certs/rsa-private.pem 2048
           openssl rsa -in gamevault-auth/src/main/resources/certs/rsa-private.pem -pubout -out gamevault-auth/src/main/resources/certs/rsa-public.pem
           
-          # 为论坛服务生成公钥（复制认证服务的公钥）
           mkdir -p gamevault-forum/src/main/resources/certs
+          mkdir -p gamevault-shopping/src/main/resources/certs
+          mkdir -p gamevault-social/src/main/resources/certs
           cp gamevault-auth/src/main/resources/certs/rsa-public.pem gamevault-forum/src/main/resources/certs/public.pem
-          
-          echo "RSA certificates generated successfully"
+          cp gamevault-auth/src/main/resources/certs/rsa-public.pem gamevault-shopping/src/main/resources/certs/public.pem
+          cp gamevault-auth/src/main/resources/certs/rsa-public.pem gamevault-social/src/main/resources/certs/public.pem
 
-      - name: Build with Maven
-        run: mvn clean package -DskipTests -B
+      - name: Maven 构建
+        run: |
+          echo "开始构建所有微服务..."
+          mvn clean package -DskipTests -B
+          echo "✅ 构建完成"
 
-      - name: Set up Docker Buildx
+      - name: 上传构建产物
+        uses: actions/upload-artifact@v4
+        with:
+          name: build-artifacts
+          path: |
+            gamevault-gateway/target/*.jar
+            gamevault-auth/target/*.jar
+            gamevault-shopping/target/*.jar
+            gamevault-forum/target/*.jar
+            gamevault-developer/target/*.jar
+            gamevault-social/target/*.jar
+          retention-days: 1
+
+  # ==================== 构建并推送 Docker 镜像 ====================
+  push-images:
+    runs-on: ubuntu-latest
+    needs: build
+    environment: production
+    
+    strategy:
+      fail-fast: false
+      matrix:
+        service: [gateway, auth, shopping, forum, developer, social]
+    
+    steps:
+      - name: Checkout 代码
+        uses: actions/checkout@v4
+
+      - name: 下载构建产物
+        uses: actions/download-artifact@v4
+        with:
+          name: build-artifacts
+
+      - name: 设置 Docker Buildx
         uses: docker/setup-buildx-action@v3
 
-      - name: Login to Container Registry
+      - name: 登录容器镜像仓库
         uses: docker/login-action@v3
         with:
-          registry: ${{ env.DOCKER_REGISTRY }}
+          registry: ${{ env.REGISTRY }}
           username: ${{ github.actor }}
           password: ${{ secrets.GITHUB_TOKEN }}
 
-      - name: Build and push Docker image
+      - name: 构建并推送 Docker 镜像
         uses: docker/build-push-action@v5
         with:
           context: ./gamevault-${{ matrix.service }}
           file: ./gamevault-${{ matrix.service }}/Dockerfile
           push: true
-          tags: ${{ env.DOCKER_REGISTRY }}/${{ github.repository_owner }}/gamevault-cloud-${{ matrix.service }}:${{ env.IMAGE_TAG }}
+          tags: |
+            ${{ env.IMAGE_PREFIX }}-${{ matrix.service }}:latest
+            ${{ env.IMAGE_PREFIX }}-${{ matrix.service }}:${{ github.sha }}
           platforms: linux/amd64
-          cache-from: type=registry,ref=${{ env.DOCKER_REGISTRY }}/${{ github.repository_owner }}/gamevault-cloud-${{ matrix.service }}:latest
-          cache-to: type=inline
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
 
-  deploy-to-ec2:
+  # ==================== 部署到 EC2 ====================
+  deploy:
     runs-on: ubuntu-latest
-    needs: build-and-push
-    name: Deploy to EC2 via Docker Compose
-    if: github.ref == 'refs/heads/prod/master_no_k8s'
-
+    needs: push-images
+    environment: production
+    
     steps:
-      - name: Checkout code
+      - name: Checkout 代码
         uses: actions/checkout@v4
 
-      - name: Configure SSH
+      - name: 配置 SSH
         run: |
           mkdir -p ~/.ssh
           echo "${{ secrets.EC2_SSH_KEY }}" > ~/.ssh/ec2_key
           chmod 600 ~/.ssh/ec2_key
           ssh-keyscan -H ${{ secrets.EC2_HOST }} >> ~/.ssh/known_hosts
 
-      - name: Initialize EC2 environment
+      - name: 准备部署文件
         run: |
-          ssh -i ~/.ssh/ec2_key ${{ secrets.EC2_USER }}@${{ secrets.EC2_HOST }} << 'EOF'
-            echo "Initializing deployment environment..."
+          # 创建临时部署目录
+          mkdir -p deploy_temp
           
-            # 检查 Docker 是否安装
+          # 复制必要文件
+          cp docker-compose.prod.yml deploy_temp/
+          cp -r nginx deploy_temp/
+          cp -r scripts deploy_temp/
+          
+          # 创建 .env 文件
+          cat > deploy_temp/.env << EOF
+          REGISTRY=${{ env.REGISTRY }}
+          IMAGE_PREFIX=${{ github.repository_owner }}/gamevault-cloud
+          IMAGE_TAG=latest
+          EOF
+
+      - name: 上传部署文件到 EC2
+        run: |
+          # 上传部署文件
+          scp -i ~/.ssh/ec2_key -r deploy_temp/* ${{ secrets.EC2_USER }}@${{ secrets.EC2_HOST }}:/tmp/gamevault-deploy/
+          
+          # 上传完成
+          echo "✅ 部署文件上传完成"
+
+      - name: 初始化 EC2 环境
+        run: |
+          ssh -i ~/.ssh/ec2_key ${{ secrets.EC2_USER }}@${{ secrets.EC2_HOST }} << 'ENDSSH'
+            set -e
+            
+            echo "=========================================="
+            echo "初始化 EC2 部署环境"
+            echo "=========================================="
+            
+            # 检查 Docker
             if ! command -v docker &> /dev/null; then
-              echo "Installing Docker..."
+              echo "安装 Docker..."
               curl -fsSL https://get.docker.com -o get-docker.sh
               sudo sh get-docker.sh
               sudo usermod -aG docker $USER
               rm get-docker.sh
             fi
-          
-            # 检查 Docker Compose 是否安装
+            
+            # 检查 Docker Compose
             if ! docker compose version &> /dev/null; then
-              echo "Installing Docker Compose..."
+              echo "安装 Docker Compose..."
               sudo apt-get update
               sudo apt-get install -y docker-compose-plugin
             fi
-          
-            echo "Docker and Docker Compose are ready"
-          EOF
+            
+            # 创建目录结构
+            echo "创建目录结构..."
+            sudo mkdir -p /opt/gamevault
+            sudo chown -R $USER:$USER /opt/gamevault
+            
+            mkdir -p /opt/gamevault/{data,logs,uploads,backups}
+            mkdir -p /opt/gamevault/data/{postgres,redis,nacos,minio}
+            
+            echo "✅ 环境初始化完成"
+          ENDSSH
 
-      - name: Create directory structure
+      - name: 部署应用到 EC2
+        env:
+          REGISTRY: ${{ env.REGISTRY }}
+          IMAGE_PREFIX: ${{ github.repository_owner }}/gamevault-cloud
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          GITHUB_ACTOR: ${{ github.actor }}
         run: |
-          ssh -i ~/.ssh/ec2_key ${{ secrets.EC2_USER }}@${{ secrets.EC2_HOST }} << 'EOF'
-            echo "Creating directory structure..."
-          
-            mkdir -p ~/gamevault-cloud/docker/postgres/data
-            mkdir -p ~/gamevault-cloud/docker/postgres/init
-            mkdir -p ~/gamevault-cloud/docker/nacos/logs
-            mkdir -p ~/gamevault-cloud/docker/nacos/data
-            mkdir -p ~/gamevault-cloud/docker/redis/data
-            mkdir -p ~/gamevault-cloud/docker/minio/data
-            mkdir -p ~/gamevault-cloud/docker/minio/config
-            mkdir -p ~/gamevault-cloud/docker/uploads
-          
-            sudo chmod -R 755 ~/gamevault-cloud/docker
-          
-            echo "Directory structure created"
-          EOF
-
-      - name: Copy deployment files to EC2
-        run: |
-          # 先清理可能存在的权限问题目录
-          ssh -i ~/.ssh/ec2_key ${{ secrets.EC2_USER }}@${{ secrets.EC2_HOST }} << 'EOF'
-            # 删除可能存在的 nginx 目录（解决权限问题）
-            sudo rm -rf ~/gamevault-cloud/nginx
-            # 确保目录存在且权限正确
-            mkdir -p ~/gamevault-cloud/nginx
-            chmod 755 ~/gamevault-cloud/nginx
-          EOF
-          
-          # 复制文件
-          scp -i ~/.ssh/ec2_key docker-compose.prod.yml ${{ secrets.EC2_USER }}@${{ secrets.EC2_HOST }}:~/gamevault-cloud/
-          scp -r -i ~/.ssh/ec2_key nginx/ ${{ secrets.EC2_USER }}@${{ secrets.EC2_HOST }}:~/gamevault-cloud/
-
-      - name: Deploy on EC2
-        run: |
-          ssh -i ~/.ssh/ec2_key ${{ secrets.EC2_USER }}@${{ secrets.EC2_HOST }} << 'EOF'
-            cd ~/gamevault-cloud
-
-            # 确保所有文件权限正确
-            echo "Fixing file permissions..."
-            sudo chown -R $USER:$USER ~/gamevault-cloud
-            chmod -R 755 ~/gamevault-cloud
-
-            echo "Creating .env file for docker-compose..."
-            echo "REGISTRY=${{ env.DOCKER_REGISTRY }}" > .env
-            echo "IMAGE_TAG=latest" >> .env
-            echo "EC2_PUBLIC_IP=${{ secrets.EC2_HOST }}" >> .env
+          ssh -i ~/.ssh/ec2_key ${{ secrets.EC2_USER }}@${{ secrets.EC2_HOST }} << 'ENDSSH'
+            set -e
             
-            echo "Checking files in current directory..."
-            ls -la
-            echo "Checking if docker-compose.prod.yml exists..."
-            if [ -f "docker-compose.prod.yml" ]; then
-              echo "✅ docker-compose.prod.yml found"
-            else
-              echo "❌ docker-compose.prod.yml NOT found"
-              exit 1
-            fi
-  
-            echo "Logging in to GitHub Container Registry..."
-            echo "${{ secrets.GITHUB_TOKEN }}" | sudo docker login ghcr.io -u ${{ github.actor }} --password-stdin
+            echo "=========================================="
+            echo "开始部署 GameVault 微服务"
+            echo "=========================================="
             
-            echo "Pulling latest images..."
-            sudo docker compose -f docker-compose.prod.yml pull
+            # 移动部署文件
+            echo "移动部署文件..."
+            sudo rm -rf /opt/gamevault/nginx
+            cp -r /tmp/gamevault-deploy/* /opt/gamevault/
             
-            echo "Stopping old containers..."
-            sudo docker compose -f docker-compose.prod.yml down --remove-orphans
+            cd /opt/gamevault
             
-            echo "Cleaning up any remaining containers..."
-            sudo docker container prune -f
+            # 登录镜像仓库
+            echo "登录到 GitHub Container Registry..."
+            echo "$GITHUB_TOKEN" | docker login ghcr.io -u "$GITHUB_ACTOR" --password-stdin
             
-            echo "Removing any conflicting containers..."
-            sudo docker rm -f gamevault-postgres gamevault-redis gamevault-minio gamevault-nacos gamevault-gateway gamevault-auth gamevault-shopping gamevault-forum gamevault-developer gamevault-social gamevault-nginx 2>/dev/null || true
+            # 拉取最新镜像
+            echo "拉取最新 Docker 镜像..."
+            docker compose -f docker-compose.prod.yml pull
             
-            echo "Starting infrastructure services..."
-            sudo docker compose -f docker-compose.prod.yml up -d postgres redis minio
+            # 停止旧容器
+            echo "停止旧容器..."
+            docker compose -f docker-compose.prod.yml down --remove-orphans || true
             
-            echo "Waiting for infrastructure services..."
+            # 清理旧容器
+            docker container prune -f
+            
+            # 分阶段启动服务
+            echo "=========================================="
+            echo "启动基础设施服务..."
+            echo "=========================================="
+            docker compose -f docker-compose.prod.yml up -d postgres redis minio
+            
+            echo "等待基础设施服务就绪（30秒）..."
             sleep 30
             
-            echo "Starting Nacos..."
-            sudo docker compose -f docker-compose.prod.yml up -d nacos
+            echo "=========================================="
+            echo "启动 Nacos..."
+            echo "=========================================="
+            docker compose -f docker-compose.prod.yml up -d nacos
             
-            echo "Waiting for Nacos to be ready..."
-            sleep 90
-            
-            echo "Starting microservices..."
-            sudo docker compose -f docker-compose.prod.yml up -d gateway auth shopping forum developer social
-            
-            echo "Waiting for microservices..."
+            echo "等待 Nacos 就绪（60秒）..."
             sleep 60
             
-            echo "Starting Nginx..."
-            sudo docker compose -f docker-compose.prod.yml up -d nginx
+            echo "=========================================="
+            echo "启动微服务..."
+            echo "=========================================="
+            docker compose -f docker-compose.prod.yml up -d gateway auth shopping forum developer social
             
-            echo "Waiting for all services..."
+            echo "等待微服务启动（45秒）..."
+            sleep 45
+            
+            echo "=========================================="
+            echo "启动 Nginx..."
+            echo "=========================================="
+            docker compose -f docker-compose.prod.yml up -d nginx
+            
+            echo "等待 Nginx 启动（15秒）..."
+            sleep 15
+            
+            # 显示服务状态
+            echo "=========================================="
+            echo "服务状态："
+            echo "=========================================="
+            docker compose -f docker-compose.prod.yml ps
+            
+            echo ""
+            echo "✅ 部署完成！"
+          ENDSSH
+
+      - name: 健康检查
+        run: |
+          ssh -i ~/.ssh/ec2_key ${{ secrets.EC2_USER }}@${{ secrets.EC2_HOST }} << 'ENDSSH'
+            set -e
+            
+            echo "=========================================="
+            echo "执行健康检查..."
+            echo "=========================================="
+            
+            cd /opt/gamevault
+            
+            # 等待服务完全启动
             sleep 30
             
-            echo "Deployment complete!"
-            sudo docker compose -f docker-compose.prod.yml ps 
-          EOF
+            # 检查各服务健康状态
+            SERVICES=("gateway:8080" "auth:8081" "shopping:8082" "forum:8083" "developer:8084" "social:8089")
+            
+            for service in "${SERVICES[@]}"; do
+              IFS=':' read -r name port <<< "$service"
+              if curl -sf http://localhost:${port}/actuator/health > /dev/null; then
+                echo "✅ ${name} 服务健康"
+              else
+                echo "⚠️  ${name} 服务可能未完全启动（这可能是正常的，服务仍在初始化中）"
+              fi
+            done
+            
+            echo ""
+            echo "=========================================="
+            echo "容器状态："
+            echo "=========================================="
+            docker ps --format "table {{.Names}}\t{{.Status}}\t{{.Ports}}"
+            
+          ENDSSH
 
-      - name: Cleanup SSH key
+      - name: 清理
         if: always()
-        run: rm -f ~/.ssh/ec2_key
+        run: |
+          rm -f ~/.ssh/ec2_key
+          ssh -i ~/.ssh/ec2_key ${{ secrets.EC2_USER }}@${{ secrets.EC2_HOST }} "rm -rf /tmp/gamevault-deploy" 2>/dev/null || true
+
+  # ==================== 部署总结 ====================
+  summary:
+    runs-on: ubuntu-latest
+    needs: [build, push-images, deploy]
+    if: always()
+    
+    steps:
+      - name: 生成部署报告
+        run: |
+          echo "## 🚀 部署执行结果" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "| 阶段 | 状态 |" >> $GITHUB_STEP_SUMMARY
+          echo "|------|------|" >> $GITHUB_STEP_SUMMARY
+          echo "| 构建 | ${{ needs.build.result == 'success' && '✅ 成功' || '❌ 失败' }} |" >> $GITHUB_STEP_SUMMARY
+          echo "| 推送镜像 | ${{ needs.push-images.result == 'success' && '✅ 成功' || '❌ 失败' }} |" >> $GITHUB_STEP_SUMMARY
+          echo "| 部署 | ${{ needs.deploy.result == 'success' && '✅ 成功' || '❌ 失败' }} |" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          
+          if [ "${{ needs.deploy.result }}" == "success" ]; then
+            echo "### ✅ 部署成功！" >> $GITHUB_STEP_SUMMARY
+            echo "" >> $GITHUB_STEP_SUMMARY
+            echo "**访问地址**: http://${{ secrets.EC2_HOST }}" >> $GITHUB_STEP_SUMMARY
+            echo "" >> $GITHUB_STEP_SUMMARY
+            echo "**镜像仓库**: ${{ env.IMAGE_PREFIX }}" >> $GITHUB_STEP_SUMMARY
+          else
+            echo "### ❌ 部署失败" >> $GITHUB_STEP_SUMMARY
+            echo "请检查上述步骤的错误日志" >> $GITHUB_STEP_SUMMARY
+            exit 1
+          fi

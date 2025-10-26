@@ -1,14 +1,3 @@
-#FROM openjdk:17-jre-slim
-#WORKDIR /app
-#RUN apk add --no-cache curl
-#RUN addgroup -S appgroup && adduser -S appuser -G appgroup
-#COPY gamevault-social/target/*.jar app.jar
-#RUN chown -R appuser:appgroup /app
-#USER appuser
-#EXPOSE 8089
-#ENTRYPOINT ["java", "-jar", "app.jar"]
-
-
 # ==========================================
 # Dockerfile for Social Service
 # ==========================================
@@ -17,22 +6,25 @@ FROM openjdk:17-jre-slim
 
 # 设置时区为新加坡时间
 ENV TZ=Asia/Singapore
-RUN apk add --no-cache tzdata curl && \
-    cp /usr/share/zoneinfo/Asia/Singapore /etc/localtime && \
-    echo "Asia/Singapore" > /etc/timezone && \
-    apk del tzdata
+RUN apt-get update && apt-get install -y tzdata curl && \
+    ln -snf /usr/share/zoneinfo/$TZ /etc/localtime && \
+    echo $TZ > /etc/timezone && \
+    rm -rf /var/lib/apt/lists/*
 
 # 设置工作目录
 WORKDIR /app
 
 # 创建应用用户和组
-RUN addgroup -S appgroup && adduser -S appuser -G appgroup
+RUN groupadd -r appgroup && useradd -r -g appgroup appuser
 
-# 复制 JAR 文件 (CI 已经构建好)
-COPY target/*.jar app.jar
+# 创建上传文件目录
+RUN mkdir -p /app/uploads && chown -R appuser:appgroup /app
 
-# 修改文件所有权
-RUN chown -R appuser:appgroup /app
+# 挂载点
+VOLUME /app/uploads
+
+# 复制 JAR 文件
+COPY --chown=appuser:appgroup target/*.jar app.jar
 
 # 切换到应用用户
 USER appuser
@@ -48,4 +40,4 @@ HEALTHCHECK --interval=30s --timeout=3s --start-period=60s --retries=3 \
     CMD curl -f http://localhost:8089/actuator/health || exit 1
 
 # 启动应用
-ENTRYPOINT ["sh", "-c", "java $JAVA_OPTS -jar app.jar"]
+ENTRYPOINT ["sh", "-c", "exec java $JAVA_OPTS -jar app.jar"]

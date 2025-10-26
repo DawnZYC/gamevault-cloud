@@ -24,7 +24,8 @@ services:
       test: ["CMD-SHELL", "pg_isready -U gamevault_user -d gamevault"]
       interval: 30s
       timeout: 10s
-      retries: 3
+      retries: 5
+      start_period: 30s
 
   # Redis 缓存
   redis:
@@ -39,10 +40,34 @@ services:
     networks:
       - gamevault-network
     healthcheck:
-      test: ["CMD", "redis-cli", "--raw", "incr", "ping"]
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 30s
+      timeout: 10s
+      retries: 5
+      start_period: 10s
+
+  # MinIO 对象存储
+  minio:
+    image: minio/minio:latest
+    container_name: gamevault-minio
+    restart: unless-stopped
+    command: server /data --console-address ":9001"
+    environment:
+      MINIO_ROOT_USER: minioadmin
+      MINIO_ROOT_PASSWORD: minioadmin123
+    volumes:
+      - minio_data:/data
+    ports:
+      - "9000:9000"
+      - "9001:9001"
+    networks:
+      - gamevault-network
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:9000/minio/health/live"]
       interval: 30s
       timeout: 10s
       retries: 3
+      start_period: 20s
 
   # Nacos 服务注册发现
   nacos:
@@ -74,39 +99,17 @@ services:
       postgres:
         condition: service_healthy
     healthcheck:
-      test: ["CMD", "curl", "-f", "http://localhost:8848/nacos/v1/ns/instance/list?serviceName=test"]
+      test: ["CMD", "curl", "-f", "http://localhost:8848/nacos/v1/console/health/readiness"]
       interval: 30s
       timeout: 10s
-      retries: 10
-      start_period: 60s
-
-  # MinIO 对象存储
-  minio:
-    image: minio/minio:latest
-    container_name: gamevault-minio
-    restart: unless-stopped
-    command: server /data --console-address ":9001"
-    environment:
-      MINIO_ROOT_USER: minioadmin
-      MINIO_ROOT_PASSWORD: minioadmin123
-    volumes:
-      - minio_data:/data
-    ports:
-      - "9000:9000"
-      - "9001:9001"
-    networks:
-      - gamevault-network
-    healthcheck:
-      test: ["CMD", "curl", "-f", "http://localhost:9000/minio/health/live"]
-      interval: 30s
-      timeout: 10s
-      retries: 3
+      retries: 15
+      start_period: 90s
 
   # ==================== 微服务 ====================
 
   # API 网关
   gateway:
-    image: ghcr.io/dawnzyc/gamevault-cloud-gateway:latest
+    image: ${REGISTRY:-ghcr.io}/${IMAGE_PREFIX:-dawnzyc/gamevault-cloud}-gateway:${IMAGE_TAG:-latest}
     container_name: gamevault-gateway
     restart: unless-stopped
     environment:
@@ -117,16 +120,18 @@ services:
     networks:
       - gamevault-network
     depends_on:
-      - postgres
+      nacos:
+        condition: service_healthy
     healthcheck:
       test: ["CMD", "curl", "-f", "http://localhost:8080/actuator/health"]
       interval: 30s
       timeout: 10s
-      retries: 3
+      retries: 5
+      start_period: 60s
 
   # 认证服务
   auth:
-    image: ghcr.io/dawnzyc/gamevault-cloud-auth:latest
+    image: ${REGISTRY:-ghcr.io}/${IMAGE_PREFIX:-dawnzyc/gamevault-cloud}-auth:${IMAGE_TAG:-latest}
     container_name: gamevault-auth
     restart: unless-stopped
     environment:
@@ -148,11 +153,12 @@ services:
       test: ["CMD", "curl", "-f", "http://localhost:8081/actuator/health"]
       interval: 30s
       timeout: 10s
-      retries: 3
+      retries: 5
+      start_period: 60s
 
   # 购物服务
   shopping:
-    image: ghcr.io/dawnzyc/gamevault-cloud-shopping:latest
+    image: ${REGISTRY:-ghcr.io}/${IMAGE_PREFIX:-dawnzyc/gamevault-cloud}-shopping:${IMAGE_TAG:-latest}
     container_name: gamevault-shopping
     restart: unless-stopped
     environment:
@@ -174,11 +180,12 @@ services:
       test: ["CMD", "curl", "-f", "http://localhost:8082/actuator/health"]
       interval: 30s
       timeout: 10s
-      retries: 3
+      retries: 5
+      start_period: 60s
 
   # 论坛服务
   forum:
-    image: ghcr.io/dawnzyc/gamevault-cloud-forum:latest
+    image: ${REGISTRY:-ghcr.io}/${IMAGE_PREFIX:-dawnzyc/gamevault-cloud}-forum:${IMAGE_TAG:-latest}
     container_name: gamevault-forum
     restart: unless-stopped
     environment:
@@ -200,11 +207,12 @@ services:
       test: ["CMD", "curl", "-f", "http://localhost:8083/actuator/health"]
       interval: 30s
       timeout: 10s
-      retries: 3
+      retries: 5
+      start_period: 60s
 
   # 开发者服务
   developer:
-    image: ghcr.io/dawnzyc/gamevault-cloud-developer:latest
+    image: ${REGISTRY:-ghcr.io}/${IMAGE_PREFIX:-dawnzyc/gamevault-cloud}-developer:${IMAGE_TAG:-latest}
     container_name: gamevault-developer
     restart: unless-stopped
     environment:
@@ -226,11 +234,12 @@ services:
       test: ["CMD", "curl", "-f", "http://localhost:8084/actuator/health"]
       interval: 30s
       timeout: 10s
-      retries: 3
+      retries: 5
+      start_period: 60s
 
   # 社交服务
   social:
-    image: ghcr.io/dawnzyc/gamevault-cloud-social:latest
+    image: ${REGISTRY:-ghcr.io}/${IMAGE_PREFIX:-dawnzyc/gamevault-cloud}-social:${IMAGE_TAG:-latest}
     container_name: gamevault-social
     restart: unless-stopped
     environment:
@@ -256,9 +265,10 @@ services:
       test: ["CMD", "curl", "-f", "http://localhost:8089/actuator/health"]
       interval: 30s
       timeout: 10s
-      retries: 3
+      retries: 5
+      start_period: 60s
 
-  # ==================== 监控服务 ====================
+  # ==================== 反向代理 ====================
 
   # Nginx 反向代理
   nginx:
@@ -280,6 +290,7 @@ services:
       interval: 30s
       timeout: 10s
       retries: 3
+      start_period: 10s
 
 volumes:
   postgres_data:

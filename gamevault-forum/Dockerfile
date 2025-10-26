@@ -1,34 +1,39 @@
-#FROM openjdk:17-jre-slim
-#WORKDIR /app
-#RUN apk add --no-cache curl
-#RUN addgroup -S appgroup && adduser -S appuser -G appgroup
-#COPY target/*.jar app.jar
-#RUN chown -R appuser:appgroup /app
-#USER appuser
-#EXPOSE 8083
-#HEALTHCHECK --interval=30s --timeout=3s --start-period=60s --retries=3 \
-#    CMD curl -f http://localhost:8083/actuator/health || exit 1
-#ENTRYPOINT ["java", "-jar", "app.jar"]
+# ==========================================
+# Dockerfile for Forum Service
+# ==========================================
 
 FROM openjdk:17-jre-slim
 
 # 设置时区为新加坡时间
 ENV TZ=Asia/Singapore
+RUN apt-get update && apt-get install -y tzdata curl && \
+    ln -snf /usr/share/zoneinfo/$TZ /etc/localtime && \
+    echo $TZ > /etc/timezone && \
+    rm -rf /var/lib/apt/lists/*
 
+# 设置工作目录
 WORKDIR /app
 
-RUN apk add --no-cache tzdata curl
+# 创建应用用户和组
+RUN groupadd -r appgroup && useradd -r -g appgroup appuser
 
-RUN addgroup -S appgroup && adduser -S appuser -G appgroup
+# 创建上传文件目录
+RUN mkdir -p /app/uploads && chown -R appuser:appgroup /app
 
+# 挂载点
+VOLUME /app/uploads
+
+# 复制 JAR 文件
 COPY --chown=appuser:appgroup target/*.jar app.jar
 
+# 切换到应用用户
 USER appuser
 
+# 暴露端口
 EXPOSE 8083
 
 # JVM 参数优化
-ENV JAVA_OPTS="-XX:+UseContainerSupport -XX:MaxRAMPercentage=75.0 -XX:+UseG1GC -XX:MaxGCPauseMillis=200 -Djava.security.egd=file:/dev/./urandom"
+ENV JAVA_OPTS="-Xms512m -Xmx1024m -XX:+UseG1GC -XX:MaxGCPauseMillis=200 -Djava.security.egd=file:/dev/./urandom"
 
 # 健康检查
 HEALTHCHECK --interval=30s --timeout=3s --start-period=60s --retries=3 \

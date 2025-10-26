@@ -214,12 +214,29 @@ jobs:
             echo "拉取最新 Docker 镜像..."
             docker compose -f docker-compose.prod.yml pull
             
-            # 停止旧容器
-            echo "停止旧容器..."
-            docker compose -f docker-compose.prod.yml down --remove-orphans || true
+            # 强制停止和清理所有相关容器
+            echo "强制停止和清理所有相关容器..."
             
-            # 清理旧容器
+            # 停止 docker-compose 管理的容器
+            docker compose -f docker-compose.prod.yml down --remove-orphans --volumes || true
+            
+            # 强制删除所有 gamevault 相关容器（按名称）
+            CONTAINERS=("gamevault-postgres" "gamevault-redis" "gamevault-minio" "gamevault-nacos" 
+                       "gamevault-gateway" "gamevault-auth" "gamevault-shopping" "gamevault-forum" 
+                       "gamevault-developer" "gamevault-social" "gamevault-nginx")
+            
+            for container in "${CONTAINERS[@]}"; do
+              echo "强制删除容器: $container"
+              docker rm -f "$container" 2>/dev/null || true
+            done
+            
+            # 清理未使用的容器
             docker container prune -f
+            
+            # 清理未使用的网络
+            docker network prune -f
+            
+            echo "✅ 容器清理完成"
             
             # 分阶段启动服务
             echo "=========================================="

@@ -133,10 +133,8 @@ services:
     networks:
       - gamevault-network
     depends_on:
-      postgres:
-        condition: service_healthy
-      nacos:
-        condition: service_healthy
+      - postgres
+      - nacos
     healthcheck:
       test: ["CMD", "curl", "-f", "http://localhost:8081/actuator/health"]
       interval: 30s
@@ -159,10 +157,8 @@ services:
     networks:
       - gamevault-network
     depends_on:
-      postgres:
-        condition: service_healthy
-      nacos:
-        condition: service_healthy
+      - postgres
+      - nacos
     healthcheck:
       test: ["CMD", "curl", "-f", "http://localhost:8082/actuator/health"]
       interval: 30s
@@ -185,10 +181,8 @@ services:
     networks:
       - gamevault-network
     depends_on:
-      postgres:
-        condition: service_healthy
-      nacos:
-        condition: service_healthy
+      - postgres
+      - nacos
     healthcheck:
       test: ["CMD", "curl", "-f", "http://localhost:8083/actuator/health"]
       interval: 30s
@@ -211,10 +205,8 @@ services:
     networks:
       - gamevault-network
     depends_on:
-      postgres:
-        condition: service_healthy
-      nacos:
-        condition: service_healthy
+      - postgres
+      - nacos
     healthcheck:
       test: ["CMD", "curl", "-f", "http://localhost:8084/actuator/health"]
       interval: 30s

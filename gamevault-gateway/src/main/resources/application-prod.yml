@@ -85,6 +85,22 @@ spring:
             - StripPrefix=0
 
       # 全局跨域配置 - 生产环境
+      globalcors:
+        add-to-simple-url-handler-mapping: true
+        corsConfigurations:
+          '[/api/**]':
+            allowedOriginPatterns:
+              - "*"  # 生产环境允许所有来源
+            allowedMethods:
+              - GET
+              - POST
+              - PUT
+              - DELETE
+              - OPTIONS
+              - PATCH
+            allowedHeaders: "*"
+            allowCredentials: true
+            maxAge: 3600
 
       # 网关超时配置
       httpclient:
@@ -104,16 +120,16 @@ management:
       base-path: /actuator
   endpoint:
     health:
-      show-details: when-authorized
+      show-details: always
       probes:
-        enabled: false
+        enabled: true
     gateway:
       enabled: true
   health:
     livenessState:
-      enabled: false
+      enabled: true
     readinessState:
-      enabled: false
+      enabled: true
   metrics:
     export:
       prometheus:

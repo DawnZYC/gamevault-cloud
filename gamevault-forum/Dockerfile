@@ -1,4 +1,4 @@
-#FROM eclipse-temurin:17-jre-alpine
+#FROM openjdk:17-jre-slim
 #WORKDIR /app
 #RUN apk add --no-cache curl
 #RUN addgroup -S appgroup && adduser -S appuser -G appgroup
@@ -10,7 +10,7 @@
 #    CMD curl -f http://localhost:8083/actuator/health || exit 1
 #ENTRYPOINT ["java", "-jar", "app.jar"]
 
-FROM eclipse-temurin:17-jre-alpine
+FROM openjdk:17-jre-slim
 
 # 设置时区为新加坡时间
 ENV TZ=Asia/Singapore

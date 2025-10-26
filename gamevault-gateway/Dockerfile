@@ -1,7 +1,7 @@
-#FROM eclipse-temurin:17-jre-alpine
+#FROM openjdk:17-jre-slim
 #WORKDIR /app
 #RUN apk add --no-cache curl
-#RUN addgroup -S appgroup && adduser -S appuser -G appgroup
+#RUN groupadd -r appgroup && useradd -r -g appgroup appuser
 #COPY gamevault-gateway/target/*.jar app.jar
 #RUN chown -R appuser:appgroup /app
 #USER appuser
@@ -13,20 +13,20 @@
 # Dockerfile for Gateway Service
 # ==========================================
 
-FROM eclipse-temurin:17-jre-alpine
+FROM openjdk:17-jre-slim
 
 # 设置时区为新加坡时间
 ENV TZ=Asia/Singapore
-RUN apk add --no-cache tzdata curl && \
+RUN apt-get update && apt-get install -y tzdata curl && \
     cp /usr/share/zoneinfo/Asia/Singapore /etc/localtime && \
     echo "Asia/Singapore" > /etc/timezone && \
-    apk del tzdata
+    rm -rf /var/lib/apt/lists/*
 
 # 设置工作目录
 WORKDIR /app
 
 # 创建应用用户和组
-RUN addgroup -S appgroup && adduser -S appuser -G appgroup
+RUN groupadd -r appgroup && useradd -r -g appgroup appuser
 
 COPY src/main/resources/application-prod.yml /app/config/
 

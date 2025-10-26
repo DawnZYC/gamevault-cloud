@@ -1,5 +1,5 @@
 #
-#FROM eclipse-temurin:17-jre-alpine
+#FROM openjdk:17-jre-slim
 #
 #WORKDIR /app
 #
@@ -25,7 +25,7 @@
 # Dockerfile for Auth Service
 # ==========================================
 
-FROM eclipse-temurin:17-jre-alpine
+FROM openjdk:17-jre-slim
 
 # 设置时区为新加坡时间
 ENV TZ=Asia/Singapore

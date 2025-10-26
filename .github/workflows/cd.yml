@@ -210,33 +210,53 @@ jobs:
             echo "登录到 GitHub Container Registry..."
             echo "$GITHUB_TOKEN" | docker login ghcr.io -u "$GITHUB_ACTOR" --password-stdin
             
-            # 拉取最新镜像
-            echo "拉取最新 Docker 镜像..."
-            docker compose -f docker-compose.prod.yml pull
+            # ========================================
+            # 第一步：彻底清理所有容器和资源
+            # ========================================
+            echo "=========================================="
+            echo "开始清理所有旧容器和资源..."
+            echo "=========================================="
             
-            # 强制停止和清理所有相关容器
-            echo "强制停止和清理所有相关容器..."
+            # 1. 停止所有 gamevault 相关的容器
+            echo "步骤 1: 停止所有容器..."
+            docker ps -a --filter "name=gamevault-" --format "{{.Names}}" | xargs -r docker stop 2>/dev/null || true
             
-            # 停止 docker-compose 管理的容器
-            docker compose -f docker-compose.prod.yml down --remove-orphans --volumes || true
+            # 2. 删除所有 gamevault 相关的容器
+            echo "步骤 2: 删除所有容器..."
+            docker ps -a --filter "name=gamevault-" --format "{{.Names}}" | xargs -r docker rm -f 2>/dev/null || true
             
-            # 强制删除所有 gamevault 相关容器（按名称）
-            CONTAINERS=("gamevault-postgres" "gamevault-redis" "gamevault-minio" "gamevault-nacos" 
-                       "gamevault-gateway" "gamevault-auth" "gamevault-shopping" "gamevault-forum" 
-                       "gamevault-developer" "gamevault-social" "gamevault-nginx")
+            # 3. 停止 docker-compose 管理的容器
+            echo "步骤 3: 停止 docker-compose 管理的容器..."
+            docker compose -f docker-compose.prod.yml down --remove-orphans --volumes 2>/dev/null || true
             
-            for container in "${CONTAINERS[@]}"; do
-              echo "强制删除容器: $container"
-              docker rm -f "$container" 2>/dev/null || true
-            done
+            # 4. 再次确认删除所有 gamevault 容器（双重保险）
+            echo "步骤 4: 再次确认删除所有 gamevault 容器..."
+            docker rm -f gamevault-postgres gamevault-redis gamevault-minio gamevault-nacos \
+                        gamevault-gateway gamevault-auth gamevault-shopping gamevault-forum \
+                        gamevault-developer gamevault-social gamevault-nginx 2>/dev/null || true
             
-            # 清理未使用的容器
+            # 5. 清理未使用的容器
+            echo "步骤 5: 清理未使用的容器..."
             docker container prune -f
             
-            # 清理未使用的网络
+            # 6. 清理 gamevault 相关网络
+            echo "步骤 6: 清理网络..."
+            docker network ls --filter "name=gamevault" --format "{{.Name}}" | xargs -r docker network rm 2>/dev/null || true
             docker network prune -f
             
-            echo "✅ 容器清理完成"
+            # 7. 等待资源完全释放
+            echo "步骤 7: 等待资源释放..."
+            sleep 5
+            
+            echo "✅ 清理完成！"
+            
+            # ========================================
+            # 第二步：拉取最新镜像
+            # ========================================
+            echo "=========================================="
+            echo "拉取最新 Docker 镜像..."
+            echo "=========================================="
+            docker compose -f docker-compose.prod.yml pull
             
             # 分阶段启动服务
             echo "=========================================="

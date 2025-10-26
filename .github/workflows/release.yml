@@ -4,6 +4,8 @@ on:
   push:
     tags:
       - 'v*'
+    branches:
+      - 'prod/master_no_k8s'
 
 env:
   REGISTRY: ghcr.io

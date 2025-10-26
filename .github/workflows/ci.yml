@@ -2,9 +2,9 @@ name: Continuous Integration (CI)
 
 on:
   push:
-    branches: [ main, develop, feature/* ]
+    branches: [ main, develop, feature/*, prod/master_no_k8s ]
   pull_request:
-    branches: [ main, develop ]
+    branches: [ main, develop, prod/master_no_k8s ]
 
 env:
   REGISTRY: ghcr.io

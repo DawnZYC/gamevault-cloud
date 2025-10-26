@@ -166,7 +166,13 @@ jobs:
             sudo docker compose -f docker-compose.prod.yml pull
             
             echo "Stopping old containers..."
-            sudo docker compose -f docker-compose.prod.yml down
+            sudo docker compose -f docker-compose.prod.yml down --remove-orphans
+            
+            echo "Cleaning up any remaining containers..."
+            sudo docker container prune -f
+            
+            echo "Removing any conflicting containers..."
+            sudo docker rm -f gamevault-postgres gamevault-redis gamevault-minio gamevault-nacos gamevault-gateway gamevault-auth gamevault-shopping gamevault-forum gamevault-developer gamevault-social gamevault-nginx 2>/dev/null || true
             
             echo "Starting infrastructure services..."
             sudo docker compose -f docker-compose.prod.yml up -d postgres redis minio

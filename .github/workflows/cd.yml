@@ -289,9 +289,13 @@ jobs:
             echo "检查基础设施服务状态..."
             docker ps --filter "name=gamevault"
             
-            # 启动微服务（不依赖健康检查）
+            # 启动微服务（确保 Nacos 先启动）
             echo "启动微服务..."
-            # 直接启动所有微服务，不等待 Nacos 健康检查
+            # 先确保 Nacos 完全启动
+            echo "确保 Nacos 完全启动..."
+            sleep 30
+            
+            # 启动微服务
             $COMPOSE_CMD -f docker-compose.prod.yml up -d gateway auth shopping forum developer social nginx
             
             # 检查微服务启动结果

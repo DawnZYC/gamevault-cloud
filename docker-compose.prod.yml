@@ -110,7 +110,7 @@ services:
     networks:
       - gamevault-network
     depends_on:
-      - nacos
+      - postgres
     healthcheck:
       test: ["CMD", "curl", "-f", "http://localhost:8080/actuator/health"]
       interval: 30s

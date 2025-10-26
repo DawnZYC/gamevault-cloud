@@ -278,6 +278,10 @@ jobs:
             
             echo "使用命令: $COMPOSE_CMD"
             
+            # 登录到 GitHub Container Registry
+            echo "登录到 GitHub Container Registry..."
+            echo "${{ secrets.GITHUB_TOKEN }}" | docker login ghcr.io -u ${{ github.actor }} --password-stdin
+            
             # 拉取最新镜像
             echo "拉取最新镜像..."
             $COMPOSE_CMD -f docker-compose.prod.yml pull

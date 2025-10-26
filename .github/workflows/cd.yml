@@ -1,112 +1,89 @@
-name: Continuous Deployment (CD)
+# ==========================================
+# CD Workflow - Build Docker Images and Deploy to EC2
+# For GameVault Cloud Microservices
+# Deployment Method: Docker Compose
+# ==========================================
+
+name: "CD - Build and Deploy to EC2"
 
 on:
   push:
-    branches: [ main, prod/master_no_k8s ]
-  workflow_run:
-    workflows: ["Continuous Integration (CI)"]
-    types: [completed]
-    branches: [ main, prod/master_no_k8s ]
+    branches: [prod/master_no_k8s]
   workflow_dispatch:
-    inputs:
-      environment:
-        description: '部署环境'
-        required: true
-        default: 'staging'
-        type: choice
-        options:
-          - staging
-          - production
-      force_deploy:
-        description: '强制部署（跳过检查）'
-        required: false
-        default: false
-        type: boolean
 
 env:
-  REGISTRY: docker.io
-  IMAGE_NAME: ${{ secrets.DOCKERHUB_USERNAME }}/gamevault-cloud
+  DOCKER_REGISTRY: docker.io
+  IMAGE_TAG: latest
 
 jobs:
-  # ==================== 部署准备 ====================
-  prepare-deployment:
+  build-and-push:
+    environment: production
     runs-on: ubuntu-latest
-    outputs:
-      environment: ${{ steps.set-env.outputs.environment }}
-      should_deploy: ${{ steps.check-deploy.outputs.should_deploy }}
-    # 只在 CI 成功时运行（如果是 workflow_run 触发）
-    if: github.event_name != 'workflow_run' || github.event.workflow_run.conclusion == 'success'
+    name: Build and Push Docker Images
+    strategy:
+      fail-fast: false
+      matrix:
+        service:
+          - gamevault-gateway
+          - gamevault-auth
+          - gamevault-shopping
+          - gamevault-forum
+          - gamevault-developer
+          - gamevault-social
+
     steps:
       - name: Checkout code
         uses: actions/checkout@v4
 
-      - name: Wait for CI to complete
+      - name: Set up JDK 17
+        uses: actions/setup-java@v4
+        with:
+          java-version: '17'
+          distribution: 'temurin'
+          cache: 'maven'
+
+      - name: Generate RSA certificates
         run: |
-          echo "等待 CI 工作流完成..."
-          # 智能等待：检查 CI 是否完成
-          for i in {1..20}; do
-            echo "检查 CI 状态 (第 $i 次)..."
-            # 使用 GitHub API 检查 CI 工作流状态
-            CI_STATUS=$(curl -s -H "Authorization: token ${{ secrets.GITHUB_TOKEN }}" \
-              "https://api.github.com/repos/${{ github.repository }}/actions/runs?head_sha=${{ github.sha }}&per_page=10" | \
-              jq -r '.workflow_runs[] | select(.name=="Continuous Integration (CI)") | .conclusion' | head -1)
-            
-            if [ "$CI_STATUS" = "success" ]; then
-              echo "✅ CI 工作流已完成并成功！"
-              break
-            elif [ "$CI_STATUS" = "failure" ] || [ "$CI_STATUS" = "cancelled" ]; then
-              echo "❌ CI 工作流失败或被取消，停止部署"
-              exit 1
-            elif [ "$CI_STATUS" = "null" ]; then
-              echo "⏳ CI 工作流仍在运行中..."
-            else
-              echo "⏳ CI 工作流状态: $CI_STATUS，继续等待..."
-            fi
-            
-            if [ $i -eq 20 ]; then
-              echo "❌ 等待超时，CI 工作流可能有问题"
-              exit 1
-            fi
-            
-            sleep 30
-          done
-          echo "CI 检查完成，开始部署准备"
+          # 为认证服务生成 RSA 证书
+          mkdir -p gamevault-auth/src/main/resources/certs
+          openssl genrsa -out gamevault-auth/src/main/resources/certs/rsa-private.pem 2048
+          openssl rsa -in gamevault-auth/src/main/resources/certs/rsa-private.pem -pubout -out gamevault-auth/src/main/resources/certs/rsa-public.pem
+          
+          # 为论坛服务生成公钥（复制认证服务的公钥）
+          mkdir -p gamevault-forum/src/main/resources/certs
+          cp gamevault-auth/src/main/resources/certs/rsa-public.pem gamevault-forum/src/main/resources/certs/public.pem
+          
+          echo "RSA certificates generated successfully"
 
-      - name: Set deployment environment
-        id: set-env
-        run: |
-          if [ "${{ github.event_name }}" == "workflow_dispatch" ]; then
-            echo "environment=${{ github.event.inputs.environment }}" >> $GITHUB_OUTPUT
-          else
-            echo "environment=production" >> $GITHUB_OUTPUT
-          fi
+      - name: Build with Maven
+        run: mvn clean package -DskipTests -B
 
-      - name: Check if should deploy
-        id: check-deploy
-        run: |
-          if [ "${{ github.event.inputs.force_deploy }}" == "true" ]; then
-            echo "should_deploy=true" >> $GITHUB_OUTPUT
-          elif [ "${{ github.ref }}" == "refs/heads/prod/master_no_k8s" ]; then
-            echo "should_deploy=true" >> $GITHUB_OUTPUT
-          else
-            echo "should_deploy=false" >> $GITHUB_OUTPUT
-          fi
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
 
-      - name: Deployment info
-        run: |
-          echo "部署环境: ${{ steps.set-env.outputs.environment }}"
-          echo "是否部署: ${{ steps.check-deploy.outputs.should_deploy }}"
-          echo "触发分支: ${{ github.ref }}"
+      - name: Login to Docker Hub
+        uses: docker/login-action@v3
+        with:
+          username: ${{ secrets.DOCKERHUB_USERNAME }}
+          password: ${{ secrets.DOCKERHUB_PASSWORD }}
 
-  # ==================== 部署到测试环境 ====================
-  # 暂时禁用 staging 环境，直接部署到 production
+      - name: Build and push Docker image
+        uses: docker/build-push-action@v5
+        with:
+          context: ./${{ matrix.service }}
+          file: ./${{ matrix.service }}/Dockerfile
+          push: true
+          tags: ${{ secrets.DOCKERHUB_USERNAME }}/${{ matrix.service }}:${{ env.IMAGE_TAG }}
+          platforms: linux/amd64
+          cache-from: type=registry,ref=${{ secrets.DOCKERHUB_USERNAME }}/${{ matrix.service }}:latest
+          cache-to: type=inline
 
-  # ==================== 部署到生产环境 ====================
-  deploy-production:
-    needs: [prepare-deployment]
+  deploy-to-ec2:
     runs-on: ubuntu-latest
-    if: needs.prepare-deployment.outputs.should_deploy == 'true'
-    
+    needs: build-and-push
+    name: Deploy to EC2 via Docker Compose
+    if: github.ref == 'refs/heads/prod/master_no_k8s'
+
     steps:
       - name: Checkout code
         uses: actions/checkout@v4
@@ -114,306 +91,83 @@ jobs:
       - name: Configure SSH
         run: |
           mkdir -p ~/.ssh
-          # 确保密钥格式正确，移除可能的换行符
-          echo "${{ secrets.EC2_SSH_KEY }}" | tr -d '\r' > ~/.ssh/id_rsa
-          chmod 600 ~/.ssh/id_rsa
-          # 验证密钥格式
-          ssh-keygen -l -f ~/.ssh/id_rsa || echo "SSH key validation failed"
-          # 添加主机到 known_hosts
+          echo "${{ secrets.EC2_SSH_KEY }}" > ~/.ssh/ec2_key
+          chmod 600 ~/.ssh/ec2_key
           ssh-keyscan -H ${{ secrets.EC2_HOST }} >> ~/.ssh/known_hosts
-          # 测试连接
-          ssh -o StrictHostKeyChecking=no -o ConnectTimeout=10 ${{ secrets.EC2_USER }}@${{ secrets.EC2_HOST }} "echo 'SSH connection test successful'"
 
-      - name: Setup EC2 environment
+      - name: Initialize EC2 environment
         run: |
-          ssh ${{ secrets.EC2_USER }}@${{ secrets.EC2_HOST }} << 'EOF'
-            echo "=== 开始设置 EC2 环境 ==="
-            
-            # 更新系统包
-            echo "更新系统包..."
-            sudo apt update -y
-            
-            # 安装必要的工具
-            echo "安装必要工具..."
-            sudo apt install -y curl wget gnupg lsb-release
-            
-            # 检查 Docker 是否已安装
-            if ! command -v docker &> /dev/null; then
-              echo "Docker 未安装，开始安装..."
-              
-              # 添加 Docker 官方 GPG 密钥
-              curl -fsSL https://download.docker.com/linux/ubuntu/gpg | sudo gpg --dearmor -o /usr/share/keyrings/docker-archive-keyring.gpg
-              
-              # 添加 Docker 仓库
-              echo "deb [arch=$(dpkg --print-architecture) signed-by=/usr/share/keyrings/docker-archive-keyring.gpg] https://download.docker.com/linux/ubuntu $(lsb_release -cs) stable" | sudo tee /etc/apt/sources.list.d/docker.list > /dev/null
-              
-              # 更新包索引
-              sudo apt update -y
-              
-              # 安装 Docker
-              sudo apt install -y docker-ce docker-ce-cli containerd.io docker-compose-plugin
-              
-              # 启动 Docker 服务
-              sudo systemctl start docker
-              sudo systemctl enable docker
-              
-              # 将当前用户添加到 docker 组
-              sudo usermod -aG docker $USER
-              
-              echo "Docker 安装完成"
-            else
-              echo "Docker 已安装"
-            fi
-            
-            # 检查 Docker 状态
-            echo "检查 Docker 状态..."
-            sudo systemctl status docker --no-pager -l
-            
-            # 创建主目录
-            echo "创建应用目录..."
-            sudo mkdir -p /opt/gamevault
-            sudo chown $USER:$USER /opt/gamevault
-            
-            # 创建微服务需要的目录结构
-            mkdir -p /opt/gamevault/logs
-            mkdir -p /opt/gamevault/backups
-            mkdir -p /opt/gamevault/uploads
-            
-            # 创建各个微服务的上传目录
-            mkdir -p /opt/gamevault/uploads/{auth,shopping,forum,developer,social}
-            
-            # 设置权限
-            chmod -R 755 /opt/gamevault/uploads
-            chmod -R 755 /opt/gamevault/logs
-            chmod -R 755 /opt/gamevault/backups
-            
-            echo "EC2 环境设置完成"
-            echo "目录结构："
-            ls -la /opt/gamevault/
-            
-            echo "Docker 版本："
-            docker --version || echo "Docker 命令不可用"
-          EOF
-
-      - name: Install net-tools on EC2
-        run: |
-          ssh ${{ secrets.EC2_USER }}@${{ secrets.EC2_HOST }} << 'EOF'
-            echo "安装 net-tools..."
-            sudo apt-get update
-            sudo apt-get install -y net-tools
-            echo "net-tools 安装完成"
-          EOF
-
-      - name: Copy deployment files
-        run: |
-          # 复制部署文件到 EC2
-          scp docker-compose.prod.yml ${{ secrets.EC2_USER }}@${{ secrets.EC2_HOST }}:/opt/gamevault/
-          scp -r nginx/ ${{ secrets.EC2_USER }}@${{ secrets.EC2_HOST }}:/opt/gamevault/
-          scp -r scripts/ ${{ secrets.EC2_USER }}@${{ secrets.EC2_HOST }}:/opt/gamevault/
+          ssh -i ~/.ssh/ec2_key ${{ secrets.EC2_USER }}@${{ secrets.EC2_HOST }} << 'EOF'
+            echo "Initializing deployment environment..."
           
-          # 设置权限
-          ssh ${{ secrets.EC2_USER }}@${{ secrets.EC2_HOST }} << 'EOF'
-            chmod +x /opt/gamevault/scripts/*.sh
-            echo "部署文件复制完成"
+            # 检查 Docker 是否安装
+            if ! command -v docker &> /dev/null; then
+              echo "Installing Docker..."
+              curl -fsSL https://get.docker.com -o get-docker.sh
+              sudo sh get-docker.sh
+              sudo usermod -aG docker $USER
+              rm get-docker.sh
+            fi
+          
+            # 检查 Docker Compose 是否安装
+            if ! docker compose version &> /dev/null; then
+              echo "Installing Docker Compose..."
+              sudo apt-get update
+              sudo apt-get install -y docker-compose-plugin
+            fi
+          
+            echo "Docker and Docker Compose are ready"
           EOF
 
-      - name: Deploy to production
+      - name: Create directory structure
         run: |
-          ssh ${{ secrets.EC2_USER }}@${{ secrets.EC2_HOST }} << 'EOF'
-            set -e # 任何命令失败都会立即退出
-            cd /opt/gamevault
+          ssh -i ~/.ssh/ec2_key ${{ secrets.EC2_USER }}@${{ secrets.EC2_HOST }} << 'EOF'
+            echo "Creating directory structure..."
+          
+            mkdir -p ~/gamevault-cloud/docker/postgres/data
+            mkdir -p ~/gamevault-cloud/docker/postgres/init
+            mkdir -p ~/gamevault-cloud/docker/nacos/logs
+            mkdir -p ~/gamevault-cloud/docker/nacos/data
+            mkdir -p ~/gamevault-cloud/docker/redis/data
+            mkdir -p ~/gamevault-cloud/docker/minio/data
+            mkdir -p ~/gamevault-cloud/docker/minio/config
+            mkdir -p ~/gamevault-cloud/docker/uploads
+          
+            sudo chmod -R 755 ~/gamevault-cloud/docker
+          
+            echo "Directory structure created"
+          EOF
+
+      - name: Copy docker-compose.prod.yml to EC2
+        run: |
+          scp -i ~/.ssh/ec2_key docker-compose.prod.yml ${{ secrets.EC2_USER }}@${{ secrets.EC2_HOST }}:~/gamevault-cloud/
+
+      - name: Deploy on EC2
+        run: |
+          ssh -i ~/.ssh/ec2_key ${{ secrets.EC2_USER }}@${{ secrets.EC2_HOST }} << 'EOF'
+            cd ~/gamevault-cloud
+
+            echo "Creating .env file for docker-compose..."
+            echo "DOCKERHUB_USERNAME=${{ secrets.DOCKERHUB_USERNAME }}" > .env
+            echo "IMAGE_TAG=latest" >> .env
+            echo "EC2_PUBLIC_IP=${{ secrets.EC2_HOST }}" >> .env
+  
+            echo "Pulling latest images..."
+            sudo docker compose pull
             
-            echo "=== 开始部署 ==="
+            echo "Stopping old containers..."
+            sudo docker compose down
             
-            # 确保 Docker 服务正在运行
-            echo "确保 Docker 服务运行..."
-            sudo systemctl start docker
-            sudo systemctl enable docker
+            echo "Starting services..."
+            sudo docker compose up -d
             
-            # 检查 Docker 是否可用
-            if ! command -v docker &> /dev/null; then
-              echo "错误：Docker 命令不可用"
-              exit 1
-            fi
-            
-            # 检查 Docker Compose 是否可用
-            if ! command -v docker-compose &> /dev/null && ! docker compose version &> /dev/null; then
-              echo "错误：Docker Compose 命令不可用"
-              exit 1
-            fi
-            
-            # 使用 docker compose 或 docker-compose
-            COMPOSE_CMD="docker compose"
-            if ! docker compose version &> /dev/null; then
-              COMPOSE_CMD="docker-compose"
-            fi
-            
-            echo "使用命令: $COMPOSE_CMD"
-            
-            # 在 EC2 上登录到 Docker Hub
-            echo "在 EC2 上登录到 Docker Hub..."
-            echo "${{ secrets.DOCKERHUB_PASSWORD }}" | docker login -u ${{ secrets.DOCKERHUB_USERNAME }} --password-stdin
-            
-            # 直接在 EC2 上拉取镜像
-            echo "在 EC2 上拉取最新镜像..."
-            for service in gateway auth shopping forum developer social; do
-              echo "拉取 $service 镜像..."
-              docker pull dawn2333/gamevault-cloud-$service:latest
-            done
-            
-            # 停止旧服务
-            echo "停止旧服务..."
-            $COMPOSE_CMD -f docker-compose.prod.yml down
-            
-            # 清理未使用的镜像
-            echo "清理未使用的镜像..."
-            docker image prune -f
-            
-            # 启动基础设施服务（PostgreSQL, Redis, MinIO, Nacos）
-            echo "启动基础设施服务..."
-            $COMPOSE_CMD -f docker-compose.prod.yml up -d postgres redis minio
-            
-            # 等待数据库和缓存服务启动
-            echo "等待数据库和缓存服务启动..."
-            sleep 30
-            
-            # 启动 Nacos
-            echo "启动 Nacos..."
-            $COMPOSE_CMD -f docker-compose.prod.yml up -d nacos
-            
-            # 等待 Nacos 启动
-            echo "等待 Nacos 启动..."
+            echo "Waiting for services..."
             sleep 60
             
-            # 检查基础设施服务状态
-            echo "检查基础设施服务状态..."
-            docker ps --filter "name=gamevault"
-            
-            # 启动微服务（确保 Nacos 先启动）
-            echo "启动微服务..."
-            # 先确保 Nacos 完全启动
-            echo "确保 Nacos 完全启动..."
-            sleep 30
-            
-            # 启动微服务
-            $COMPOSE_CMD -f docker-compose.prod.yml up -d gateway auth shopping forum developer social nginx
-            
-            # 检查微服务启动结果
-            if [ $? -ne 0 ]; then
-              echo "❌ 微服务启动失败！"
-              $COMPOSE_CMD -f docker-compose.prod.yml ps -a # 显示所有容器，包括已退出的
-              exit 1
-            fi
-            
-            # 等待微服务启动
-            echo "等待微服务启动..."
-            sleep 120
-            
-            # 检查所有服务状态
-            echo "检查所有服务状态..."
-            docker ps --filter "name=gamevault"
-            
-            # 检查是否有微服务异常退出
-            if $COMPOSE_CMD -f docker-compose.prod.yml ps --services --filter "status=exited" | grep -q -E "gateway|auth|shopping|forum|developer|social|nginx"; then
-              echo "❌ 发现有微服务异常退出！"
-              $COMPOSE_CMD -f docker-compose.prod.yml ps -a
-              echo "检查异常退出的服务日志："
-              for service in gateway auth shopping forum developer social nginx; do
-                if $COMPOSE_CMD -f docker-compose.prod.yml ps --services --filter "status=exited" | grep -q "$service"; then
-                  echo "=== $service 服务日志 ==="
-                  docker logs gamevault-$service --tail 20 || echo "$service 日志获取失败"
-                fi
-              done
-              exit 1
-            fi
-            
-            # 检查服务日志
-            echo "检查 Gateway 服务日志..."
-            docker logs gamevault-gateway --tail 50 || echo "Gateway 日志获取失败"
-            
-            echo "部署完成"
+            echo "Deployment complete!"
+            sudo docker compose ps 
           EOF
 
-      - name: Production health check
-        run: |
-          echo "=== 生产环境健康检查 ==="
-          
-          # 首先检查 EC2 上的容器状态
-          echo "检查 EC2 容器状态..."
-          ssh ${{ secrets.EC2_USER }}@${{ secrets.EC2_HOST }} << 'EOF'
-            echo "=== Docker 容器状态 ==="
-            docker ps --filter "name=gamevault" --format "table {{.Names}}\t{{.Status}}\t{{.Ports}}"
-            
-            echo ""
-            echo "=== 容器日志检查 ==="
-            echo "Gateway 日志:"
-            docker logs gamevault-gateway --tail 20 || echo "Gateway 容器不存在或未运行"
-            
-            echo ""
-            echo "Nacos 日志:"
-            docker logs gamevault-nacos --tail 10 || echo "Nacos 容器不存在或未运行"
-            
-            echo ""
-            echo "=== 端口检查 ==="
-            netstat -tuln | grep -E ":(80|8080|8081|8082|8083|8084|8089|5432|6379|8848|9000)" || echo "没有相关端口在监听"
-          EOF
-          
-          # 等待服务完全启动
-          echo "等待服务完全启动..."
-          sleep 60
-          
-          # 检查网关
-          echo "检查网关服务..."
-          if curl -f --connect-timeout 10 --max-time 30 http://${{ secrets.EC2_HOST }}/health; then
-            echo "✅ 网关服务正常"
-          else
-            echo "❌ 网关服务异常"
-            echo "尝试检查网关详细状态..."
-            curl -v http://${{ secrets.EC2_HOST }}/health || echo "curl 失败"
-            exit 1
-          fi
-          
-          # 检查认证服务
-          echo "检查认证服务..."
-          if curl -f --connect-timeout 10 --max-time 30 http://${{ secrets.EC2_HOST }}/api/auth/health; then
-            echo "✅ 认证服务正常"
-          else
-            echo "❌ 认证服务异常"
-            exit 1
-          fi
-          
-          echo "🎉 生产环境部署成功！"
-
-  # ==================== 部署后验证 ====================
-  post-deployment-verification:
-    needs: [deploy-production]
-    runs-on: ubuntu-latest
-    if: always() && needs.deploy-production.result == 'success'
-    
-    steps:
-      - name: Run smoke tests
-        run: |
-          echo "运行生产环境冒烟测试..."
-          # 这里可以添加具体的冒烟测试
-
-      - name: Notify deployment status
-        run: |
-          echo "🎉 生产环境部署成功！"
-          echo "生产环境地址: http://${{ secrets.EC2_HOST }}"
-
-  # ==================== 部署失败回滚 ====================
-  rollback:
-    needs: [deploy-production]
-    runs-on: ubuntu-latest
-    if: failure() && needs.deploy-production.result == 'failure'
-    
-    steps:
-      - name: Rollback deployment
-        run: |
-          echo "回滚生产环境..."
-          # 回滚逻辑
-
-      - name: Notify rollback
-        run: |
-          echo "❌ 部署失败，已执行回滚操作"
-          echo "请检查日志并修复问题后重新部署"
+      - name: Cleanup SSH key
+        if: always()
+        run: rm -f ~/.ssh/ec2_key

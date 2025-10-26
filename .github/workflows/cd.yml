@@ -149,12 +149,30 @@ jobs:
           # 测试连接
           ssh -o StrictHostKeyChecking=no -o ConnectTimeout=10 ${{ secrets.EC2_USER }}@${{ secrets.EC2_HOST }} "echo 'SSH connection test successful'"
 
-      - name: Pre-deployment backup
+      - name: Setup EC2 environment
         run: |
-          # echo "跳过备份步骤，直接部署"
           ssh ${{ secrets.EC2_USER }}@${{ secrets.EC2_HOST }} << 'EOF'
-            cd /opt/gamevault
-            /opt/gamevault/backup.sh
+            # 创建目录
+            sudo mkdir -p /opt/gamevault
+            sudo chown $USER:$USER /opt/gamevault
+            
+            # 创建基本目录结构
+            mkdir -p /opt/gamevault/{logs,uploads,backups}
+            
+            echo "EC2 环境设置完成"
+          EOF
+
+      - name: Copy deployment files
+        run: |
+          # 复制部署文件到 EC2
+          scp docker-compose.prod.yml ${{ secrets.EC2_USER }}@${{ secrets.EC2_HOST }}:/opt/gamevault/
+          scp -r nginx/ ${{ secrets.EC2_USER }}@${{ secrets.EC2_HOST }}:/opt/gamevault/
+          scp -r scripts/ ${{ secrets.EC2_USER }}@${{ secrets.EC2_HOST }}:/opt/gamevault/
+          
+          # 设置权限
+          ssh ${{ secrets.EC2_USER }}@${{ secrets.EC2_HOST }} << 'EOF'
+            chmod +x /opt/gamevault/scripts/*.sh
+            echo "部署文件复制完成"
           EOF
 
       - name: Deploy to production
@@ -162,26 +180,21 @@ jobs:
           ssh ${{ secrets.EC2_USER }}@${{ secrets.EC2_HOST }} << 'EOF'
             cd /opt/gamevault
             
-            # 滚动更新服务
+            # 拉取最新镜像
             docker compose -f docker-compose.prod.yml pull
             
-            # 逐个更新服务（零停机部署）
-            services=("gateway" "auth" "shopping" "forum" "developer" "social")
-            for service in "${services[@]}"; do
-              echo "更新服务: $service"
-              docker compose -f docker-compose.prod.yml up -d --no-deps $service
-              sleep 30
-              
-              # 健康检查
-              if ! curl -f http://localhost:8080/actuator/health; then
-                echo "服务 $service 健康检查失败，回滚..."
-                docker compose -f docker-compose.prod.yml restart $service
-                exit 1
-              fi
-            done
+            # 停止旧服务
+            docker compose -f docker-compose.prod.yml down
             
-            # 清理旧镜像
-            docker image prune -f
+            # 启动新服务
+            docker compose -f docker-compose.prod.yml up -d
+            
+            # 等待服务启动
+            sleep 60
+            
+            # 检查服务状态
+            docker ps
+            echo "部署完成"
           EOF
 
       - name: Production health check

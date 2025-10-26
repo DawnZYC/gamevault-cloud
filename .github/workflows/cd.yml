@@ -5,6 +5,8 @@ on:
     workflows: ["Continuous Integration (CI)"]
     types: [completed]
     branches: [ main, prod/master_no_k8s ]
+  push:
+    branches: [ main, prod/master_no_k8s ]
   workflow_dispatch:
     inputs:
       environment:
@@ -32,6 +34,8 @@ jobs:
     outputs:
       environment: ${{ steps.set-env.outputs.environment }}
       should_deploy: ${{ steps.check-deploy.outputs.should_deploy }}
+    # 只在 CI 成功时运行（如果是 workflow_run 触发）
+    if: github.event_name != 'workflow_run' || github.event.workflow_run.conclusion == 'success'
     steps:
       - name: Checkout code
         uses: actions/checkout@v4

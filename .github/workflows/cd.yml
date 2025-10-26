@@ -151,21 +151,31 @@ jobs:
             echo "DOCKERHUB_USERNAME=${{ secrets.DOCKERHUB_USERNAME }}" > .env
             echo "IMAGE_TAG=latest" >> .env
             echo "EC2_PUBLIC_IP=${{ secrets.EC2_HOST }}" >> .env
+            
+            echo "Checking files in current directory..."
+            ls -la
+            echo "Checking if docker-compose.prod.yml exists..."
+            if [ -f "docker-compose.prod.yml" ]; then
+              echo "✅ docker-compose.prod.yml found"
+            else
+              echo "❌ docker-compose.prod.yml NOT found"
+              exit 1
+            fi
   
             echo "Pulling latest images..."
-            sudo docker compose pull
+            sudo docker compose -f docker-compose.prod.yml pull
             
             echo "Stopping old containers..."
-            sudo docker compose down
+            sudo docker compose -f docker-compose.prod.yml down
             
             echo "Starting services..."
-            sudo docker compose up -d
+            sudo docker compose -f docker-compose.prod.yml up -d
             
             echo "Waiting for services..."
             sleep 60
             
             echo "Deployment complete!"
-            sudo docker compose ps 
+            sudo docker compose -f docker-compose.prod.yml ps 
           EOF
 
       - name: Cleanup SSH key

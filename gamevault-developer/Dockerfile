@@ -2,7 +2,7 @@
 # Dockerfile for Developer Service
 # ==========================================
 
-FROM openjdk:17-jre-slim
+FROM eclipse-temurin:17-jre-jammy
 
 # 设置时区为新加坡时间
 ENV TZ=Asia/Singapore

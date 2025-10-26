@@ -8,7 +8,7 @@ on:
 
 env:
   REGISTRY: docker.io
-  IMAGE_NAME: dawn2333/gamevault-cloud
+  IMAGE_NAME: ${{ secrets.DOCKERHUB_USERNAME }}/gamevault-cloud
 
 jobs:
   # ==================== 代码质量检查 ====================

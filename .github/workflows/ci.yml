@@ -121,9 +121,10 @@ jobs:
 
       - name: Build Maven project
         run: |
-          mvn clean package -DskipTests
-          cd gamevault-${{ matrix.service }}
-          mvn clean package -DskipTests
+          # 先安装公共模块到本地仓库
+          mvn clean install -DskipTests -pl gamevault-common
+          # 再构建特定服务
+          mvn clean package -DskipTests -pl gamevault-${{ matrix.service }}
 
       - name: Set up Docker Buildx
         uses: docker/setup-buildx-action@v3

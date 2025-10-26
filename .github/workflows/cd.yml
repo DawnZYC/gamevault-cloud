@@ -141,7 +141,7 @@ jobs:
 
   # ==================== 部署到生产环境 ====================
   deploy-production:
-    needs: [prepare-deployment, build-images]
+    needs: [prepare-deployment]
     runs-on: ubuntu-latest
     if: needs.prepare-deployment.outputs.should_deploy == 'true'
     

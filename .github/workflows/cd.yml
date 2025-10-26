@@ -330,14 +330,25 @@ jobs:
             echo "登录到 GitHub Container Registry..."
             echo "${{ secrets.GITHUB_TOKEN }}" | docker login ghcr.io -u ${{ github.actor }} --password-stdin
             
-            # 检查镜像是否存在（简化版）
+            # 检查镜像是否存在（带调试信息）
             echo "检查镜像是否存在..."
+            echo "仓库信息: ${{ github.repository }}"
+            echo "分支信息: ${{ github.ref }}"
+            
             for service in gateway auth shopping forum developer social; do
               echo "检查 $service 镜像..."
-              if docker manifest inspect ghcr.io/${{ github.repository }}/$service:latest > /dev/null 2>&1; then
-                echo "✅ 镜像 ghcr.io/${{ github.repository }}/$service:latest 存在"
+              IMAGE_URL="ghcr.io/${{ github.repository }}/$service:latest"
+              echo "查找镜像: $IMAGE_URL"
+              
+              # 先尝试列出所有可用的标签
+              echo "尝试列出 $service 服务的所有标签..."
+              docker manifest inspect ghcr.io/${{ github.repository }}/$service:latest 2>&1 || echo "latest 标签不存在"
+              
+              # 检查是否存在
+              if docker manifest inspect "$IMAGE_URL" > /dev/null 2>&1; then
+                echo "✅ 镜像 $IMAGE_URL 存在"
               else
-                echo "❌ 镜像 ghcr.io/${{ github.repository }}/$service:latest 不存在！"
+                echo "❌ 镜像 $IMAGE_URL 不存在！"
                 echo "请确保 CI 工作流已成功完成并推送了镜像。"
                 exit 1
               fi

@@ -158,6 +158,18 @@ jobs:
             type=sha,prefix={{branch}}-
             type=raw,value=latest,enable={{is_default_branch}}
             type=raw,value=latest,enable=${{ github.ref == 'refs/heads/prod/master_no_k8s' }}
+          flavor: |
+            latest=false
+
+      - name: Debug metadata
+        run: |
+          echo "=== 调试信息 ==="
+          echo "REGISTRY: ${{ env.REGISTRY }}"
+          echo "IMAGE_NAME: ${{ env.IMAGE_NAME }}"
+          echo "SERVICE: ${{ matrix.service }}"
+          echo "TAGS: ${{ steps.meta.outputs.tags }}"
+          echo "LABELS: ${{ steps.meta.outputs.labels }}"
+          echo "================"
 
       - name: Build and push Docker image
         uses: docker/build-push-action@v5

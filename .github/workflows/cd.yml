@@ -233,6 +233,15 @@ jobs:
             docker --version || echo "Docker 命令不可用"
           EOF
 
+      - name: Install net-tools on EC2
+        run: |
+          ssh ${{ secrets.EC2_USER }}@${{ secrets.EC2_HOST }} << 'EOF'
+            echo "安装 net-tools..."
+            sudo apt-get update
+            sudo apt-get install -y net-tools
+            echo "net-tools 安装完成"
+          EOF
+
       - name: Copy deployment files
         run: |
           # 复制部署文件到 EC2
@@ -249,6 +258,7 @@ jobs:
       - name: Deploy to production
         run: |
           ssh ${{ secrets.EC2_USER }}@${{ secrets.EC2_HOST }} << 'EOF'
+            set -e # 任何命令失败都会立即退出
             cd /opt/gamevault
             
             echo "=== 开始部署 ==="
@@ -310,6 +320,13 @@ jobs:
             echo "启动微服务..."
             $COMPOSE_CMD -f docker-compose.prod.yml up -d
             
+            # 检查微服务启动结果
+            if [ $? -ne 0 ]; then
+              echo "❌ 微服务启动失败！"
+              $COMPOSE_CMD -f docker-compose.prod.yml ps -a # 显示所有容器，包括已退出的
+              exit 1
+            fi
+            
             # 等待微服务启动
             echo "等待微服务启动..."
             sleep 120
@@ -317,6 +334,20 @@ jobs:
             # 检查所有服务状态
             echo "检查所有服务状态..."
             docker ps --filter "name=gamevault"
+            
+            # 检查是否有微服务异常退出
+            if $COMPOSE_CMD -f docker-compose.prod.yml ps --services --filter "status=exited" | grep -q -E "gateway|auth|shopping|forum|developer|social|nginx"; then
+              echo "❌ 发现有微服务异常退出！"
+              $COMPOSE_CMD -f docker-compose.prod.yml ps -a
+              echo "检查异常退出的服务日志："
+              for service in gateway auth shopping forum developer social nginx; do
+                if $COMPOSE_CMD -f docker-compose.prod.yml ps --services --filter "status=exited" | grep -q "$service"; then
+                  echo "=== $service 服务日志 ==="
+                  docker logs gamevault-$service --tail 20 || echo "$service 日志获取失败"
+                fi
+              done
+              exit 1
+            fi
             
             # 检查服务日志
             echo "检查 Gateway 服务日志..."

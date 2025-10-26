@@ -165,7 +165,50 @@ jobs:
       - name: Setup EC2 environment
         run: |
           ssh ${{ secrets.EC2_USER }}@${{ secrets.EC2_HOST }} << 'EOF'
+            echo "=== 开始设置 EC2 环境 ==="
+            
+            # 更新系统包
+            echo "更新系统包..."
+            sudo apt update -y
+            
+            # 安装必要的工具
+            echo "安装必要工具..."
+            sudo apt install -y curl wget gnupg lsb-release
+            
+            # 检查 Docker 是否已安装
+            if ! command -v docker &> /dev/null; then
+              echo "Docker 未安装，开始安装..."
+              
+              # 添加 Docker 官方 GPG 密钥
+              curl -fsSL https://download.docker.com/linux/ubuntu/gpg | sudo gpg --dearmor -o /usr/share/keyrings/docker-archive-keyring.gpg
+              
+              # 添加 Docker 仓库
+              echo "deb [arch=$(dpkg --print-architecture) signed-by=/usr/share/keyrings/docker-archive-keyring.gpg] https://download.docker.com/linux/ubuntu $(lsb_release -cs) stable" | sudo tee /etc/apt/sources.list.d/docker.list > /dev/null
+              
+              # 更新包索引
+              sudo apt update -y
+              
+              # 安装 Docker
+              sudo apt install -y docker-ce docker-ce-cli containerd.io docker-compose-plugin
+              
+              # 启动 Docker 服务
+              sudo systemctl start docker
+              sudo systemctl enable docker
+              
+              # 将当前用户添加到 docker 组
+              sudo usermod -aG docker $USER
+              
+              echo "Docker 安装完成"
+            else
+              echo "Docker 已安装"
+            fi
+            
+            # 检查 Docker 状态
+            echo "检查 Docker 状态..."
+            sudo systemctl status docker --no-pager -l
+            
             # 创建主目录
+            echo "创建应用目录..."
             sudo mkdir -p /opt/gamevault
             sudo chown $USER:$USER /opt/gamevault
             
@@ -185,6 +228,9 @@ jobs:
             echo "EC2 环境设置完成"
             echo "目录结构："
             ls -la /opt/gamevault/
+            
+            echo "Docker 版本："
+            docker --version || echo "Docker 命令不可用"
           EOF
 
       - name: Copy deployment files
@@ -207,13 +253,38 @@ jobs:
             
             echo "=== 开始部署 ==="
             
+            # 确保 Docker 服务正在运行
+            echo "确保 Docker 服务运行..."
+            sudo systemctl start docker
+            sudo systemctl enable docker
+            
+            # 检查 Docker 是否可用
+            if ! command -v docker &> /dev/null; then
+              echo "错误：Docker 命令不可用"
+              exit 1
+            fi
+            
+            # 检查 Docker Compose 是否可用
+            if ! command -v docker-compose &> /dev/null && ! docker compose version &> /dev/null; then
+              echo "错误：Docker Compose 命令不可用"
+              exit 1
+            fi
+            
+            # 使用 docker compose 或 docker-compose
+            COMPOSE_CMD="docker compose"
+            if ! docker compose version &> /dev/null; then
+              COMPOSE_CMD="docker-compose"
+            fi
+            
+            echo "使用命令: $COMPOSE_CMD"
+            
             # 拉取最新镜像
             echo "拉取最新镜像..."
-            docker compose -f docker-compose.prod.yml pull
+            $COMPOSE_CMD -f docker-compose.prod.yml pull
             
             # 停止旧服务
             echo "停止旧服务..."
-            docker compose -f docker-compose.prod.yml down
+            $COMPOSE_CMD -f docker-compose.prod.yml down
             
             # 清理未使用的镜像
             echo "清理未使用的镜像..."
@@ -221,7 +292,7 @@ jobs:
             
             # 启动基础设施服务（Nacos, PostgreSQL, Redis, MinIO）
             echo "启动基础设施服务..."
-            docker compose -f docker-compose.prod.yml up -d postgres redis nacos minio
+            $COMPOSE_CMD -f docker-compose.prod.yml up -d postgres redis nacos minio
             
             # 等待基础设施服务启动
             echo "等待基础设施服务启动..."
@@ -233,7 +304,7 @@ jobs:
             
             # 启动微服务
             echo "启动微服务..."
-            docker compose -f docker-compose.prod.yml up -d
+            $COMPOSE_CMD -f docker-compose.prod.yml up -d
             
             # 等待微服务启动
             echo "等待微服务启动..."

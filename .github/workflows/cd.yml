@@ -139,12 +139,19 @@ jobs:
       - name: Configure SSH
         run: |
           mkdir -p ~/.ssh
-          echo "${{ secrets.EC2_SSH_KEY }}" > ~/.ssh/id_rsa
+          # 确保密钥格式正确，移除可能的换行符
+          echo "${{ secrets.EC2_SSH_KEY }}" | tr -d '\r' > ~/.ssh/id_rsa
           chmod 600 ~/.ssh/id_rsa
+          # 验证密钥格式
+          ssh-keygen -l -f ~/.ssh/id_rsa || echo "SSH key validation failed"
+          # 添加主机到 known_hosts
           ssh-keyscan -H ${{ secrets.EC2_HOST }} >> ~/.ssh/known_hosts
+          # 测试连接
+          ssh -o StrictHostKeyChecking=no -o ConnectTimeout=10 ${{ secrets.EC2_USER }}@${{ secrets.EC2_HOST }} "echo 'SSH connection test successful'"
 
       - name: Pre-deployment backup
         run: |
+          # echo "跳过备份步骤，直接部署"
           ssh ${{ secrets.EC2_USER }}@${{ secrets.EC2_HOST }} << 'EOF'
             cd /opt/gamevault
             /opt/gamevault/backup.sh

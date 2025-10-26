@@ -272,8 +272,11 @@ jobs:
             echo "=========================================="
             docker compose -f docker-compose.prod.yml up -d nacos
             
-            echo "等待 Nacos 就绪（60秒）..."
-            sleep 60
+            echo "等待 Nacos 初始化 PostgreSQL 数据库（120秒）..."
+            sleep 120
+            
+            echo "检查 Nacos 状态..."
+            docker logs gamevault-nacos --tail=50 || true
             
             echo "=========================================="
             echo "启动微服务..."

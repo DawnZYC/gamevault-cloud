@@ -188,9 +188,6 @@ jobs:
             type=gha,mode=max
             type=registry,ref=${{ secrets.DOCKERHUB_USERNAME }}/gamevault-cloud-${{ matrix.service }}:latest,mode=max
           platforms: linux/amd64
-        continue-on-error: true
-        retry-on-failure: true
-        retry-max-attempts: 3
 
   # ==================== 集成测试 ====================
   integration-test:

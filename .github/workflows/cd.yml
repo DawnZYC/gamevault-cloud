@@ -138,9 +138,10 @@ jobs:
             echo "Directory structure created"
           EOF
 
-      - name: Copy docker-compose.prod.yml to EC2
+      - name: Copy deployment files to EC2
         run: |
           scp -i ~/.ssh/ec2_key docker-compose.prod.yml ${{ secrets.EC2_USER }}@${{ secrets.EC2_HOST }}:~/gamevault-cloud/
+          scp -r -i ~/.ssh/ec2_key nginx/ ${{ secrets.EC2_USER }}@${{ secrets.EC2_HOST }}:~/gamevault-cloud/
 
       - name: Deploy on EC2
         run: |

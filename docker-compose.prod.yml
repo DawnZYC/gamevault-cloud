@@ -1,3 +1,5 @@
+version: '3.8'
+
 services:
   # ==================== 基础设施服务 ====================
   
@@ -267,8 +269,8 @@ services:
       - "80:80"
       - "443:443"
     volumes:
-      - ./nginx/nginx.conf:/etc/nginx/nginx.conf
-      - ./nginx/ssl:/etc/nginx/ssl
+      - ./nginx/nginx.conf:/etc/nginx/nginx.conf:ro
+      - ./nginx/ssl:/etc/nginx/ssl:ro
     networks:
       - gamevault-network
     depends_on:

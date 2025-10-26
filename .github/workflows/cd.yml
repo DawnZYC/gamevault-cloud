@@ -1,7 +1,9 @@
 name: Continuous Deployment (CD)
 
 on:
-  push:
+  workflow_run:
+    workflows: ["Continuous Integration (CI)"]
+    types: [completed]
     branches: [ main, prod/master_no_k8s ]
   workflow_dispatch:
     inputs:
@@ -30,8 +32,6 @@ jobs:
     outputs:
       environment: ${{ steps.set-env.outputs.environment }}
       should_deploy: ${{ steps.check-deploy.outputs.should_deploy }}
-    # 等待 CI 工作流完成
-    needs: []
     steps:
       - name: Checkout code
         uses: actions/checkout@v4

@@ -24,8 +24,8 @@ on:
         type: boolean
 
 env:
-  REGISTRY: ghcr.io
-  IMAGE_NAME: ${{ github.repository_owner }}/gamevault-cloud
+  REGISTRY: docker.io
+  IMAGE_NAME: dawn2333/gamevault-cloud
 
 jobs:
   # ==================== 部署准备 ====================
@@ -326,9 +326,9 @@ jobs:
             
             echo "使用命令: $COMPOSE_CMD"
             
-            # 登录到 GitHub Container Registry
-            echo "登录到 GitHub Container Registry..."
-            echo "${{ secrets.GITHUB_TOKEN }}" | docker login ghcr.io -u ${{ github.actor }} --password-stdin
+            # 登录到 Docker Hub
+            echo "登录到 Docker Hub..."
+            echo "${{ secrets.DOCKERHUB_PASSWORD }}" | docker login -u ${{ secrets.DOCKERHUB_USERNAME }} --password-stdin
             
             # 检查镜像是否存在（带调试信息）
             echo "检查镜像是否存在..."
@@ -337,7 +337,7 @@ jobs:
             
             for service in gateway auth shopping forum developer social; do
               echo "检查 $service 镜像..."
-              IMAGE_URL="ghcr.io/${{ env.IMAGE_NAME }}/$service:latest"
+              IMAGE_URL="${{ env.IMAGE_NAME }}/$service:latest"
               echo "查找镜像: $IMAGE_URL"
               
               # 先尝试列出所有可用的标签
@@ -349,7 +349,7 @@ jobs:
                 echo "✅ 镜像 $IMAGE_URL 存在"
               else
                 echo "❌ 镜像 $IMAGE_URL 不存在！"
-                echo "请确保 CI 工作流已成功完成并推送了镜像。"
+                echo "请确保 CI 工作流已成功完成并推送了镜像到 Docker Hub。"
                 exit 1
               fi
             done
